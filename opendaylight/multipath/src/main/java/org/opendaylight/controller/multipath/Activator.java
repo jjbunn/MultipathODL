@@ -7,7 +7,7 @@
  * and is available at http://www.eclipse.org/legal/epl-v10.html
  */
 
-package org.opendaylight.controller.samples.simpleforwarding.internal;
+package org.opendaylight.controller.multipath;
 
 import java.util.Dictionary;
 import java.util.Hashtable;
@@ -18,15 +18,11 @@ import org.opendaylight.controller.forwardingrulesmanager.IForwardingRulesManage
 import org.opendaylight.controller.hosttracker.IfIptoHost;
 import org.opendaylight.controller.hosttracker.IfNewHostNotify;
 import org.opendaylight.controller.sal.core.ComponentActivatorAbstractBase;
-import org.opendaylight.controller.sal.packet.IDataPacketService;
-import org.opendaylight.controller.sal.packet.IListenDataPacket;
 import org.opendaylight.controller.sal.routing.IListenRoutingUpdates;
 import org.opendaylight.controller.sal.routing.IRouting;
-import org.opendaylight.controller.samples.simpleforwarding.IBroadcastHandler;
-import org.opendaylight.controller.samples.simpleforwarding.IBroadcastPortSelector;
+import org.opendaylight.controller.statisticsmanager.IStatisticsManager;
 import org.opendaylight.controller.switchmanager.IInventoryListener;
 import org.opendaylight.controller.switchmanager.ISwitchManager;
-//import org.opendaylight.controller.statisticsmanager.IStatisticsManager;
 import org.opendaylight.controller.topologymanager.ITopologyManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -47,8 +43,7 @@ public class Activator extends ComponentActivatorAbstractBase {
      */
     @Override
     public Object[] getImplementations() {
-        Object[] res = { SimpleForwardingImpl.class,
-                         SimpleBroadcastHandlerImpl.class };
+        Object[] res = { MultiPath.class };
         return res;
     }
 
@@ -67,15 +62,16 @@ public class Activator extends ComponentActivatorAbstractBase {
      */
     @Override
     public void configureInstance(Component c, Object imp, String containerName) {
-        if (imp.equals(SimpleForwardingImpl.class)) {
+        if (imp.equals(MultiPath.class)) {
             Dictionary<String, Object> props = new Hashtable<String, Object>();
-            props.put("salListenerName", "simpleforwarding");
+            props.put("salListenerName", "multipath");
 
             // export the service
-            c.setInterface(new String[] { IInventoryListener.class.getName(),
+            c.setInterface(new String[] {
+                    IInventoryListener.class.getName(),
                     IfNewHostNotify.class.getName(),
                     IListenRoutingUpdates.class.getName(),
-                    IListenDataPacket.class.getName() }, props);
+                    IPathFinderService.class.getName() }, props);
 
             c.add(createContainerServiceDependency(containerName).setService(
                     IClusterContainerServices.class).setCallbacks(
@@ -87,52 +83,26 @@ public class Activator extends ComponentActivatorAbstractBase {
                     "unsetSwitchManager").setRequired(false));
 
             c.add(createContainerServiceDependency(containerName).setService(
-                    IfIptoHost.class).setCallbacks("setHostTracker",
-                    "unsetHostTracker").setRequired(false));
+                    IStatisticsManager.class).setCallbacks("setStatisticsManager",
+                    "unsetStatisticsManager").setRequired(false));
 
             c.add(createContainerServiceDependency(containerName).setService(
-                    IForwardingRulesManager.class).setCallbacks(
-                    "setForwardingRulesManager", "unsetForwardingRulesManager")
-                    .setRequired(true));
-
-//            c.add(createContainerServiceDependency(containerName).setService(
-//                    IStatisticsManager.class).setCallbacks("setStatisticsManager",
-//                    "unsetStatisticsManager").setRequired(false));
+                    IfIptoHost.class).setCallbacks("setHostTracker",
+                    "unsetHostTracker").setRequired(false));
 
             c.add(createContainerServiceDependency(containerName).setService(
                     ITopologyManager.class).setCallbacks("setTopologyManager",
                     "unsetTopologyManager").setRequired(false));
 
             c.add(createContainerServiceDependency(containerName).setService(
+                    IForwardingRulesManager.class).setCallbacks(
+                    "setForwardingRulesManager", "unsetForwardingRulesManager")
+                    .setRequired(true));
+
+            c.add(createContainerServiceDependency(containerName).setService(
                     IRouting.class).setCallbacks("setRouting", "unsetRouting")
                     .setRequired(false));
-            c.add(createContainerServiceDependency(containerName).setService(
-                    IDataPacketService.class).setCallbacks("setDataPacketService",
-                   "unsetDataPacketService").setRequired(false));
 
-        } else if (imp.equals(SimpleBroadcastHandlerImpl.class)) {
-            Dictionary<String, String> props = new Hashtable<String, String>();
-            props.put("salListenerName", "simplebroadcasthandler");
-
-            // export the service
-            c.setInterface(new String[] { IBroadcastHandler.class.getName(),
-                    IListenDataPacket.class.getName() }, props);
-
-            c.add(createContainerServiceDependency(containerName).setService(
-                    IDataPacketService.class).setCallbacks("setDataPacketService",
-                   "unsetDataPacketService").setRequired(false));
-
-            c.add(createContainerServiceDependency(containerName).setService(
-                   ITopologyManager.class).setCallbacks("setTopologyManager",
-                   "unsetTopologyManager").setRequired(true));
-
-            c.add(createContainerServiceDependency(containerName).setService(
-                   IBroadcastPortSelector.class).setCallbacks("setBroadcastPortSelector",
-                   "unsetBroadcastPortSelector").setRequired(false));
-
-            c.add(createContainerServiceDependency(containerName).setService(
-                   ISwitchManager.class).setCallbacks("setSwitchManager",
-                   "unsetSwitchManager").setRequired(false));
         }
     }
 }

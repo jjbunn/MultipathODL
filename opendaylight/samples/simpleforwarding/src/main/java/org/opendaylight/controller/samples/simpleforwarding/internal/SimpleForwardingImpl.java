@@ -859,6 +859,7 @@ public class SimpleForwardingImpl implements IfNewHostNotify,
             return;
         }
         Set<HostNodeConnector> allHosts = this.hostTracker.getAllHosts();
+        log.info("recalculateDone {} hosts", allHosts.size());
         for (HostNodeConnector host : allHosts) {
             Set<Node> switches = preparePerHostRules(host);
             if (switches != null) {
@@ -913,6 +914,7 @@ public class SimpleForwardingImpl implements IfNewHostNotify,
         }
         log.debug("Host Facing Port in a container came up, install the rules for all hosts from this port !");
         Set<HostNodeConnector> allHosts = this.hostTracker.getAllHosts();
+        log.info("update rules {} hosts", allHosts.size());
         for (HostNodeConnector host : allHosts) {
             if (node.equals(host.getnodeconnectorNode())) {
                 /*
