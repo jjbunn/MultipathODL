@@ -644,7 +644,7 @@ public class MultiPath implements
         Map<NodeConnector, FlowEntry> pos;
         FlowEntry po;
         // Now program every single switch
-        log.info("Inside installPerHostRules");
+        //log.info("Inside installPerHostRules");
         for (Node swId : switchesToProgram) {
             HostNodePair key = new HostNodePair(host, swId);
             pos = this.rulesDB.get(key);
@@ -679,7 +679,7 @@ public class MultiPath implements
                 }
             }
         }
-        log.info("Leaving installPerHostRules");
+        //log.info("Leaving installPerHostRules");
         return retCode;
     }
 
@@ -3129,6 +3129,7 @@ public class MultiPath implements
                     "Path calculator {} not found. Using path calculator {} instead",
                     name, this.currentPathCalculator.getName());
         }
+        log.info("Path calculator set to {}", this.currentPathCalculator.getName());
 
         return this.currentPathCalculator;
     }
