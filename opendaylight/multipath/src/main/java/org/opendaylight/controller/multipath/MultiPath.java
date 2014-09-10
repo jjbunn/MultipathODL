@@ -1,7 +1,7 @@
 package org.opendaylight.controller.multipath;
 
-import java.io.FileWriter;
-import java.io.PrintWriter;
+
+
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.EnumSet;
@@ -17,6 +17,9 @@ import java.util.Set;
 import java.util.Comparator;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 
 import org.opendaylight.controller.clustering.services.CacheConfigException;
 import org.opendaylight.controller.clustering.services.CacheExistException;
@@ -145,8 +148,10 @@ public class MultiPath implements
    /** A Set of already used path numbers: [pathId -> Path]. */
     protected ConcurrentHashMap<Integer, ExtendedPath> pathIdToExtendedPathMap;
 
+    private CalculateDataRates calculateDataRates;
 
-    protected PrintWriter myLog;
+
+
 
     /**
      * Return codes from the programming of the perHost rules in HW
@@ -155,84 +160,7 @@ public class MultiPath implements
         SUCCESS, FAILED_FEW_SWITCHES, FAILED_ALL_SWITCHES, FAILED_WRONG_PARAMS
     }
 
-    public void setSwitchManager(ISwitchManager switchManager) {
-        log.debug("Setting SwitchManager");
-        this.switchManager = switchManager;
-    }
 
-    public void unsetSwitchManager(ISwitchManager switchManager) {
-        if (this.switchManager == switchManager) {
-            this.switchManager = null;
-        }
-    }
-    public void setForwardingRulesManager(
-            IForwardingRulesManager forwardingRulesManager) {
-        log.debug("Setting ForwardingRulesManager");
-        this.forwardingRulesManager = forwardingRulesManager;
-    }
-
-    public void unsetForwardingRulesManager(
-            IForwardingRulesManager forwardingRulesManager) {
-        if (this.forwardingRulesManager == forwardingRulesManager) {
-            this.forwardingRulesManager = null;
-        }
-    }
-
-    public void setStatisticsManager(IStatisticsManager statisticsManager) {
-        log.debug("Setting StatisticsManager");
-        this.statisticsManager = statisticsManager;
-    }
-
-    public void unsetStatisticsManager(IStatisticsManager statisticsManager) {
-        if (this.statisticsManager == statisticsManager) {
-            this.statisticsManager = null;
-        }
-    }
-
-    void setClusterContainerService(IClusterContainerServices s) {
-        log.debug("Cluster Service set");
-        this.clusterContainerService = s;
-    }
-
-    void unsetClusterContainerService(IClusterContainerServices s) {
-        if (this.clusterContainerService == s) {
-            log.debug("Cluster Service removed!");
-            this.clusterContainerService = null;
-        }
-    }
-
-    public void setRouting(IRouting routing) {
-        log.debug("Setting routing");
-        this.routing = routing;
-    }
-
-    public void unsetRouting(IRouting routing) {
-        if (this.routing == routing) {
-            this.routing = null;
-        }
-    }
-
-    public void setTopologyManager(ITopologyManager topologyManager) {
-        log.debug("Setting topologyManager");
-        this.topologyManager = topologyManager;
-    }
-
-    public void unsetTopologyManager(ITopologyManager topologyManager) {
-        if (this.topologyManager == topologyManager) {
-            this.topologyManager = null;
-        }
-    }
-
-    public void setHostTracker(IfIptoHost hostTracker) {
-        log.debug("Setting HostTracker");
-        this.hostTracker = hostTracker;
-    }
-
-    public void unsetHostTracker(IfIptoHost hostTracker) {
-        if (this.hostTracker == hostTracker) {
-            this.hostTracker = null;
-        }
-    }
 
     /**
      * Function called by the dependency manager when all the required
@@ -255,17 +183,17 @@ public class MultiPath implements
         if(nodeName.contains(":0b")) return "IAH";
         return "???";
     }
+
+
+
     void init() {
 
         log.info("MultiPath Starting up");
 
-        try {
-            myLog = new PrintWriter(new FileWriter("D:/odl/mylog.txt"));
-            myLog.println("\n\n\nODL/Mininet/Internet2 Simulation Log Started ...");
-        } catch (Exception e) {
-            System.exit(0);
-        }
-
+        // Start up the link utilization calculator
+        ScheduledExecutorService dataRateCalculator = Executors.newSingleThreadScheduledExecutor();
+        calculateDataRates = new CalculateDataRates();
+        dataRateCalculator.scheduleAtFixedRate(calculateDataRates, 0,  calculateDataRates.DATARATE_CALCULATOR_INTERVAL, TimeUnit.SECONDS);
 
         pathCounter = new ConcurrentHashMap<EndPoints, Integer>();
         pathSelectors = new HashSet<IPathSelector>();
@@ -300,6 +228,11 @@ public class MultiPath implements
         // Add path calculators to map.
         pathCalculators.add(new DijkstraPathCalculator());
         pathCalculators.add(new BruteForcePathCalculator());
+    }
+
+    @Override
+    public CalculateDataRates getDataRateCalculator() {
+        return calculateDataRates;
     }
 
     /**
@@ -426,7 +359,6 @@ public class MultiPath implements
         HashMap<NodeConnector, FlowEntry> pos;
         FlowEntry po;
 
-        myLog.println("Process Host attached to Switch "+myNodeString(rootNode)+" ... examine all Switches:");
 
         // for all nodes in the system
         for (Node node : nodes) {
@@ -442,12 +374,6 @@ public class MultiPath implements
 
 
             ExtendedPath res = currentPathSelector.selectPath(node, rootNode);
-
-            myLog.println(    "   Switch "+myNodeString(node)+" "+currentPathSelector.getName()+" to "+myNodeString(rootNode));
-            for(Edge link: res.getEdges()) {
-                myLog.println("      Link "+myNodeString(link.getTailNodeConnector().getNode())+" -> "+
-                                            myNodeString(link.getHeadNodeConnector().getNode()));
-            }
 
 
             /*
@@ -516,7 +442,6 @@ public class MultiPath implements
 
         //      log.debug("Getting out at the end!");
 
-        myLog.flush();
 
         return switchesToProgram;
     }
@@ -1810,13 +1735,12 @@ public class MultiPath implements
 
         @Override
         public ExtendedPath selectPath(Node srcNode, Node dstNode, Match match) {
-            /* The best path, i.e. the one with the least flows on its links. */
+            /* The best path, i.e. the one with the largest minimum bandwidth on all its links */
             ExtendedPath bestPath = null;
             /* Best available bandwidth, i.e. capacity - pathBitRate. */
             long bestAvailableBandwidth = 0;
             /* Get pre-calculated paths. */
-            Set<ExtendedPath> paths = this.pathFinder
-                    .getPaths(srcNode, dstNode);
+            Set<ExtendedPath> paths = this.pathFinder.getPaths(srcNode, dstNode);
 
             // If we do not have any paths (yet).
             if (paths == null) {
@@ -1827,17 +1751,16 @@ public class MultiPath implements
                     .getGlobalInstance(ITopologyManager.class, this);
             Map<Edge, Set<Property>> edgeTopology = topologyManager.getEdges();
 
-            IStatisticsManager statisticsManager = (IStatisticsManager) ServiceHelper
-                    .getGlobalInstance(IStatisticsManager.class, this);
+            // Get the prevailing data rates on all links from the DataRate calculator
+            Map<Edge,Double> dataRates = calculateDataRates.getEdgeDataRates();
 
             // Calculate path available bandwidth. The higher the better.
             for (ExtendedPath path : paths) {
                 long pathAvailableBandwidth = Long.MAX_VALUE;
                 List<Edge> links = path.getEdges();
 
-                // Calculate the link capacity to flow ratio. The minimal link
-                // ratio determines the path ratio.
                 for (Edge link : links) {
+                    // Note that these are in Bits
                     long linkBitRate = 0;
                     long linkCapacity = 0;
 
@@ -1845,34 +1768,23 @@ public class MultiPath implements
                         for (Property property : edgeTopology.get(link)) {
                             if (property.getName().equals(
                                     Bandwidth.BandwidthPropName)) {
-                                linkCapacity = ((Bandwidth) property)
-                                        .getValue();
+                                linkCapacity = ((Bandwidth) property).getValue();
                                 break;
                             }
                         }
                     }
 
-                    // Get the flows on the source node
-                    List<FlowOnNode> flowsOnNode = statisticsManager
-                            .getFlowsNoCache(link.getHeadNodeConnector()
-                                    .getNode());
-                    if (flowsOnNode != null && flowsOnNode.size() > 0) {
-                        for (FlowOnNode flowOnNode : flowsOnNode) {
-                            long byteCount = flowOnNode.getByteCount();
-                            long durationSeconds = flowOnNode
-                                    .getDurationSeconds();
-                            if (durationSeconds > 0)
-                                linkBitRate += (8 * byteCount)
-                                        / durationSeconds;
-
-                        }
+                    if(dataRates.containsKey(link)) {
+                        // The data rate value is in Bytes/second, so we multiply by 8 to get bits
+                        linkBitRate = dataRates.get(link).longValue() * 8;
                     }
 
-                    // Get the paths available bandwidth.
-                    if (linkCapacity - linkBitRate < pathAvailableBandwidth) {
-                        pathAvailableBandwidth = linkCapacity - linkBitRate;
-                        pathAvailableBandwidth = (pathAvailableBandwidth < 0) ? 0
-                                : pathAvailableBandwidth;
+                    // Get the path's available bandwidth, i.e. the capacity minus the traffic
+                    long availableBandwidth = linkCapacity - linkBitRate;
+                    if(availableBandwidth < 0) availableBandwidth = 0;
+
+                    if (availableBandwidth < pathAvailableBandwidth) {
+                        pathAvailableBandwidth = availableBandwidth;
                     }
 
                 }
@@ -1883,6 +1795,7 @@ public class MultiPath implements
                 }
 
             }
+            log.info("Best available bandwidth path {}", bestPath);
 
             return (bestPath != null) ? bestPath : null;
         }
@@ -3354,6 +3267,85 @@ public class MultiPath implements
         }
 
         return newPathId;
+    }
+
+    public void setSwitchManager(ISwitchManager switchManager) {
+        log.debug("Setting SwitchManager");
+        this.switchManager = switchManager;
+    }
+
+    public void unsetSwitchManager(ISwitchManager switchManager) {
+        if (this.switchManager == switchManager) {
+            this.switchManager = null;
+        }
+    }
+    public void setForwardingRulesManager(
+            IForwardingRulesManager forwardingRulesManager) {
+        log.debug("Setting ForwardingRulesManager");
+        this.forwardingRulesManager = forwardingRulesManager;
+    }
+
+    public void unsetForwardingRulesManager(
+            IForwardingRulesManager forwardingRulesManager) {
+        if (this.forwardingRulesManager == forwardingRulesManager) {
+            this.forwardingRulesManager = null;
+        }
+    }
+
+    public void setStatisticsManager(IStatisticsManager statisticsManager) {
+        log.debug("Setting StatisticsManager");
+        this.statisticsManager = statisticsManager;
+    }
+
+    public void unsetStatisticsManager(IStatisticsManager statisticsManager) {
+        if (this.statisticsManager == statisticsManager) {
+            this.statisticsManager = null;
+        }
+    }
+
+    void setClusterContainerService(IClusterContainerServices s) {
+        log.debug("Cluster Service set");
+        this.clusterContainerService = s;
+    }
+
+    void unsetClusterContainerService(IClusterContainerServices s) {
+        if (this.clusterContainerService == s) {
+            log.debug("Cluster Service removed!");
+            this.clusterContainerService = null;
+        }
+    }
+
+    public void setRouting(IRouting routing) {
+        log.debug("Setting routing");
+        this.routing = routing;
+    }
+
+    public void unsetRouting(IRouting routing) {
+        if (this.routing == routing) {
+            this.routing = null;
+        }
+    }
+
+    public void setTopologyManager(ITopologyManager topologyManager) {
+        log.debug("Setting topologyManager");
+        this.topologyManager = topologyManager;
+    }
+
+    public void unsetTopologyManager(ITopologyManager topologyManager) {
+        if (this.topologyManager == topologyManager) {
+            this.topologyManager = null;
+        }
+    }
+
+    public void setHostTracker(IfIptoHost hostTracker) {
+        log.debug("Setting HostTracker");
+        this.hostTracker = hostTracker;
+    }
+
+    public void unsetHostTracker(IfIptoHost hostTracker) {
+        if (this.hostTracker == hostTracker) {
+            this.hostTracker = null;
+        }
     }
 
 }

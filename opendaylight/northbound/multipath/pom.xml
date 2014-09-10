@@ -32,6 +32,14 @@
       <artifactId>sal</artifactId>
     </dependency>
     <dependency>
+       <groupId>org.opendaylight.controller</groupId>
+       <artifactId>statisticsmanager</artifactId>
+    </dependency>
+        <dependency>
+       <groupId>org.opendaylight.controller</groupId>
+       <artifactId>statisticsmanager.implementation</artifactId>
+    </dependency>
+    <dependency>
         <groupId>org.opendaylight.controller</groupId>
         <artifactId>multipath</artifactId>
         <version>0.4.2-SNAPSHOT</version>
@@ -59,6 +67,7 @@
               org.opendaylight.controller.containermanager,
               org.opendaylight.controller.switchmanager,
               org.opendaylight.controller.usermanager,
+              org.opendaylight.controller.statisticsmanager,
               org.apache.commons.lang3.tuple,
               org.apache.commons.logging,
               com.google.gson,
@@ -68,6 +77,7 @@
               org.opendaylight.controller.northbound.commons.exception,
               org.opendaylight.controller.northbound.commons.utils,
               org.opendaylight.controller.sal.authorization,
+              org.opendaylight.controller.sal.reader,
               org.opendaylight.controller.northbound.commons.query,
               org.opendaylight.controller.topologymanager,
               org.opendaylight.controller.hosttracker,

@@ -8,6 +8,7 @@
 
 package org.opendaylight.controller.multipath.northbound;
 
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
@@ -53,9 +54,12 @@ import org.opendaylight.controller.northbound.commons.utils.NorthboundUtils;
 import org.opendaylight.controller.sal.authorization.Privilege;
 import org.opendaylight.controller.sal.core.Edge;
 import org.opendaylight.controller.sal.core.Node;
+import org.opendaylight.controller.sal.reader.FlowOnNode;
 import org.opendaylight.controller.sal.utils.GlobalConstants;
 import org.opendaylight.controller.sal.utils.ServiceHelper;
+import org.opendaylight.controller.statisticsmanager.IStatisticsManager;
 import org.opendaylight.controller.topologymanager.ITopologyManager;
+import org.opendaylight.controller.multipath.CalculateDataRates;
 import org.opendaylight.controller.multipath.ExtendedPath;
 import org.opendaylight.controller.multipath.IPathCalculator;
 //import org.opendaylight.controller.topologymanager.ITopologyManager;
@@ -168,6 +172,10 @@ public class MultipathNorthbound {
     *
     * @param containerName
     *            Name of the Container (Eg. 'default')
+    * @param node1
+    *            The name of the source node/switch
+    * @param node2
+    *            The name of the destination node/switch
     * @return The selected path
     *
     *         Example:
@@ -537,6 +545,155 @@ public class MultipathNorthbound {
               .build();
 
   }
+
+  /**
+  *
+  * Retrieve the data rates on all links in the topology
+  *
+  * @param containerName
+  *            Name of the Container (Eg. 'default')
+  * @return The data rates
+  *
+  *         Example:
+  *
+  *         Request URL:
+  *         http://localhost:8080/controller/nb/v2/multipath/default/datarates
+  *
+  */
+ @Path("/{containerName}/datarates")
+ @GET
+ @Produces({ MediaType.APPLICATION_JSON, MediaType.APPLICATION_XML })
+ // @TypeHint(Nodes.class)
+ @StatusCodes({
+         @ResponseCode(code = 200, condition = "Operation successful"),
+         @ResponseCode(code = 401, condition = "User not authorized to perform this operation"),
+         @ResponseCode(code = 404, condition = "The containerName is not found"),
+         @ResponseCode(code = 503, condition = "One or more of Controller Services are unavailable"),
+         @ResponseCode(code = 400, condition = "Incorrect query syntax") })
+ public Response getDataRates(
+         @PathParam("containerName") String containerName) {
+
+     if (!isValidContainer(containerName)) {
+         throw new ResourceNotFoundException("Container " + containerName
+                 + " does not exist.");
+     }
+
+     if (!NorthboundUtils.isAuthorized(getUserName(), containerName,
+             Privilege.READ, this)) {
+         throw new UnauthorizedException(
+                 "User is not authorized to perform this operation on container "
+                         + containerName);
+     }
+
+     IPathFinderService multipath = getMultipathService(containerName);
+     if (multipath == null) {
+         throw new ServiceUnavailableException("Multipath "
+                 + RestMessages.SERVICEUNAVAILABLE.toString());
+     }
+
+     CalculateDataRates rateCalculator = multipath.getDataRateCalculator();
+
+     // NB data rates are in Bytes/sec from this calculator
+     Map<Edge,Double> dataRates = rateCalculator.getEdgeDataRates();
+
+     JsonObject ratesJson = new JsonObject();
+     JsonArray linksJson = new JsonArray();
+     for(Edge link: dataRates.keySet()) {
+         String rate = String.format("%8.4f Gbits/sec", (8*dataRates.get(link))/(1024*1024*1024));
+         ratesJson.addProperty(link.toString(), rate);
+     }
+
+     Gson gson = new Gson();
+     return Response.ok(gson.toJson(ratesJson), MediaType.APPLICATION_JSON)
+             .build();
+
+ }
+
+
+
+
+
+  /**
+  *
+  * Retrieve the Flows on a Node
+  *
+  * @param containerName
+  *            Name of the Container (Eg. 'default')
+  * @param nodeName
+  *
+  * @return The Flows on the node named nodeName
+  *
+  *         Example:
+  *
+  *         Request URL:
+  *         http://localhost:8080/controller/nb/v2/multipath/default/flows/{node}
+  *
+  */
+ @Path("/{containerName}/flows/{nodeName}")
+ @GET
+ @Produces({ MediaType.APPLICATION_JSON, MediaType.APPLICATION_XML })
+ // @TypeHint(Nodes.class)
+ @StatusCodes({
+         @ResponseCode(code = 200, condition = "Operation successful"),
+         @ResponseCode(code = 401, condition = "User not authorized to perform this operation"),
+         @ResponseCode(code = 404, condition = "The containerName is not found"),
+         @ResponseCode(code = 503, condition = "One or more of Controller Services are unavailable"),
+         @ResponseCode(code = 400, condition = "Incorrect query syntax") })
+ public Response getFlows(
+         @PathParam("containerName") String containerName,
+         @PathParam("nodeName") String nodeName) {
+
+     if (!isValidContainer(containerName)) {
+         throw new ResourceNotFoundException("Container " + containerName
+                 + " does not exist.");
+     }
+
+     if (!NorthboundUtils.isAuthorized(getUserName(), containerName,
+             Privilege.READ, this)) {
+         throw new UnauthorizedException(
+                 "User is not authorized to perform this operation on container "
+                         + containerName);
+     }
+
+
+     // Check that the node exists in the topology
+     ITopologyManager topologyManager = (ITopologyManager) ServiceHelper
+             .getGlobalInstance(ITopologyManager.class, this);
+
+     if(topologyManager == null) {
+         throw new ServiceUnavailableException("TopologyManager "
+             + RestMessages.SERVICEUNAVAILABLE.toString());
+     }
+
+     Map<Node, Set<Edge>> nodeMapTopology = topologyManager
+             .getNodeEdges();
+
+     Set<Node> allNodes = nodeMapTopology.keySet();
+
+     Node node = myStringNode(nodeName, allNodes);
+
+     if(node == null) {
+         throw new BadRequestException("Node "+nodeName+" does not exist in the topology");
+     }
+
+     IStatisticsManager statisticsManager = (IStatisticsManager) ServiceHelper
+             .getGlobalInstance(IStatisticsManager.class, this);
+
+     // Get the flows on the node
+     List<FlowOnNode> flowsOnNode = statisticsManager.getFlowsNoCache(node);
+
+     Collection<String> flows = new ArrayList<String>();
+     for(FlowOnNode flowOnNode: flowsOnNode) {
+         flows.add(flowOnNode.toString());
+     }
+
+     Gson gson = new Gson();
+     return Response.ok(gson.toJson(flows), MediaType.APPLICATION_JSON)
+             .build();
+
+ }
+
+
 
     /**
      *
