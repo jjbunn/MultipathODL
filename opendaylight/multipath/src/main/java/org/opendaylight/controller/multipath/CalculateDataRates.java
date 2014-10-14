@@ -19,7 +19,7 @@ public class CalculateDataRates implements Runnable {
     /** Last timestamp of Executor run */
     protected long lastDataRateTimestamp = System.currentTimeMillis();
     /** The interval for the Executor, in TimeUnit.SECONDS */
-    protected final int DATARATE_CALCULATOR_INTERVAL = 60;
+    protected final int DATARATE_CALCULATOR_INTERVAL = 10;
     /** The map that maintains up to date link data rate */
     protected ConcurrentHashMap<Edge, Double> linkDataRate = new ConcurrentHashMap<Edge, Double>();
     /** The map that maintains up to date link Bytes transferred data */
@@ -38,6 +38,7 @@ public class CalculateDataRates implements Runnable {
         // Elapsed time in seconds
         double elapsedTime = 0.001 * (double) (thisDataRateTimestamp - lastDataRateTimestamp);
         Set<Edge> currentEdges = edgeTopology.keySet();
+
         for(Edge edge: currentEdges) {
             // For this edge, find the nodeconnector of the tail (the source of the traffic)
             NodeConnector tailNodeConnector = edge.getTailNodeConnector();

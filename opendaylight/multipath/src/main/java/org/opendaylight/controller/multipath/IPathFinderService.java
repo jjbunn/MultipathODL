@@ -1,7 +1,10 @@
 package org.opendaylight.controller.multipath;
 
+import java.util.List;
 import java.util.Set;
 
+import org.opendaylight.controller.forwardingrulesmanager.FlowEntry;
+import org.opendaylight.controller.hosttracker.hostAware.HostNodeConnector;
 import org.opendaylight.controller.sal.core.Node;
 import org.opendaylight.controller.sal.match.Match;
 
@@ -134,6 +137,27 @@ public interface IPathFinderService {
      * @return <b>IPathCalculator</b> The current path calculator.
      */
     public IPathCalculator setPathCalculator(String name);
+
+    /**
+    *
+    * Create flow entries in switches to support the current selected path between two hosts
+    * @param source
+    * @param destination
+    * @return <b>List<FlowEntry></b> The flows installed for the path
+    */
+
+    public List<FlowEntry> createFlowsForSelectedPath(HostNodeConnector source, HostNodeConnector destination);
+
+    /**
+    *
+    * Remove Flow Entrys on a specific node
+    * @param node
+    * @param destination
+    * @return <b>List<FlowEntry></b> The Flow Entrys that were removed
+    */
+
+    public List<FlowEntry> removeFlows(Node node);
+
 
     /**
      * @return The name of the Data Rate calculator used for (some) path

@@ -1,7 +1,5 @@
 package org.opendaylight.controller.multipath;
 
-
-
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.EnumSet;
@@ -32,9 +30,8 @@ import org.opendaylight.controller.hosttracker.IfNewHostNotify;
 import org.opendaylight.controller.hosttracker.hostAware.HostNodeConnector;
 import org.opendaylight.controller.sal.action.Action;
 import org.opendaylight.controller.sal.action.Output;
-import org.opendaylight.controller.sal.action.PopVlan;
+
 import org.opendaylight.controller.sal.action.SetDlDst;
-import org.opendaylight.controller.sal.action.SetVlanId;
 import org.opendaylight.controller.sal.core.Bandwidth;
 import org.opendaylight.controller.sal.core.ConstructionException;
 import org.opendaylight.controller.sal.core.Edge;
@@ -43,7 +40,6 @@ import org.opendaylight.controller.sal.core.NodeConnector;
 import org.opendaylight.controller.sal.core.Property;
 import org.opendaylight.controller.sal.core.State;
 import org.opendaylight.controller.sal.core.UpdateType;
-import org.opendaylight.controller.sal.core.NodeConnector.NodeConnectorIDType;
 import org.opendaylight.controller.sal.flowprogrammer.Flow;
 import org.opendaylight.controller.sal.match.Match;
 import org.opendaylight.controller.sal.match.MatchType;
@@ -51,7 +47,6 @@ import org.opendaylight.controller.sal.reader.FlowOnNode;
 import org.opendaylight.controller.sal.routing.IListenRoutingUpdates;
 import org.opendaylight.controller.sal.routing.IRouting;
 import org.opendaylight.controller.sal.utils.EtherTypes;
-import org.opendaylight.controller.sal.utils.NodeConnectorCreator;
 import org.opendaylight.controller.sal.utils.ServiceHelper;
 import org.opendaylight.controller.sal.utils.Status;
 import org.opendaylight.controller.statisticsmanager.IStatisticsManager;
@@ -100,14 +95,11 @@ import org.slf4j.LoggerFactory;
  * @author Michael Bredel <michael.bredel@cern.ch>
  * @author Julian Bunn <Julian.Bunn@caltech.edu>
  *
- *         (Ported to OpenDaylight from Floodlight.)
+ *         (Ported to OpenDaylight from Floodlight and augmented by Julian
+ *         Bunn.)
  */
-public class MultiPath implements
-        IPathFinderService,
-        IfNewHostNotify,
-        IListenRoutingUpdates,
-        IInventoryListener,
-        IPathCacheService {
+public class MultiPath implements IPathFinderService, IfNewHostNotify,
+        IListenRoutingUpdates, IInventoryListener, IPathCacheService {
     /** The maximum link weight. */
     public static final int MAX_LINK_WEIGHT = 10000;
     /** The maximum path weight. */
@@ -145,13 +137,10 @@ public class MultiPath implements
 
     /** Stores all paths established in the topology: [EndPoints -> PathSet]. */
     protected ConcurrentHashMap<EndPoints, Set<ExtendedPath>> endPointsToExtendedPathMap;
-   /** A Set of already used path numbers: [pathId -> Path]. */
+    /** A Set of already used path numbers: [pathId -> Path]. */
     protected ConcurrentHashMap<Integer, ExtendedPath> pathIdToExtendedPathMap;
 
     private CalculateDataRates calculateDataRates;
-
-
-
 
     /**
      * Return codes from the programming of the perHost rules in HW
@@ -160,7 +149,208 @@ public class MultiPath implements
         SUCCESS, FAILED_FEW_SWITCHES, FAILED_ALL_SWITCHES, FAILED_WRONG_PARAMS
     }
 
+    /**
+     * Removes all Flow Entrys on a given node
+     *
+     * @param node
+     *            The switch for which entries will be removed
+     */
+    public List<FlowEntry> removeFlows(Node node) {
+        List<FlowEntry> existing = forwardingRulesManager.getFlowEntriesForNode(node);
+        List<FlowEntry> removed = new ArrayList<FlowEntry>();
 
+        for(FlowEntry fe: existing) {
+            Status status = forwardingRulesManager.uninstallFlowEntry(fe);
+            if(status.isSuccess()) removed.add(fe);
+        }
+
+        return removed;
+    }
+
+    /**
+     * Populates <tt>rulesDB</tt> with rules specifying how to reach
+     * <tt>destination</tt> from <tt>source</tt>
+     *
+     * @param source
+     *            The source.
+     * @param destination
+     *            The destination.
+     */
+    public List<FlowEntry> createFlowsForSelectedPath(HostNodeConnector source,
+            HostNodeConnector destination) {
+
+        if (source == null || destination == null) {
+            log.error("Source or Destination host is null");
+            return null;
+        }
+
+        Node sourceNode = source.getnodeconnectorNode();
+        Node destinationNode = destination.getnodeconnectorNode();
+
+        if (sourceNode == null || destinationNode == null) {
+            log.error("Source or Destination connector's node is null");
+            return null;
+        }
+
+        NodeConnector sourceNodeConnector = source.getnodeConnector();
+        NodeConnector destinationNodeConnector = destination.getnodeConnector();
+
+        if (sourceNodeConnector == null || destinationNodeConnector == null) {
+            log.error("Source or Destination's nodeconnector is null");
+            return null;
+        }
+
+        List<FlowEntry> flows = new ArrayList<FlowEntry>();
+
+        ExtendedPath res = currentPathSelector.selectPath(sourceNode,
+                destinationNode);
+
+        String flowName = source.getNetworkAddressAsString() + " to "
+                + destination.getNetworkAddressAsString();
+        String policyName = currentPathSelector.getName()+" "+flowName;
+
+        log.warn("Flow creation for " + flowName + " Switches "
+                + sourceNode.toString() + " to " + destinationNode.toString());
+
+        NodeConnector lastNodeConnector = sourceNodeConnector;
+
+        for (Edge link : res.getEdges()) {
+
+            log.warn("Working on link: " + link.toString());
+
+            // First the tail connector (i.e. the "from" end)
+
+            NodeConnector tailNodeConnector = link.getTailNodeConnector();
+
+            Node tailNode = tailNodeConnector.getNode();
+
+            NodeConnector headNodeConnector = link.getHeadNodeConnector();
+
+            Node headNode = headNodeConnector.getNode();
+
+            Match match = new Match();
+            List<Action> actions = new ArrayList<Action>();
+
+            match.setField(MatchType.DL_TYPE, EtherTypes.IPv4.shortValue());
+            match.setField(MatchType.NW_DST, destination.getNetworkAddress());
+
+            actions.add(new Output(tailNodeConnector));
+            //actions.add(new PopVlan());
+
+            match.setField(MatchType.IN_PORT, lastNodeConnector);
+
+            Flow flow = new Flow(match, actions);
+            flow.setIdleTimeout((short) 12345);
+            flow.setHardTimeout((short) 0);
+            flow.setPriority(DEFAULT_IPSWITCH_PRIORITY);
+
+            log.warn("Adding flow at tail: " + flow.toString());
+
+            FlowEntry fe = new FlowEntry(policyName, flowName, flow, tailNode);
+
+            flows.add(fe);
+
+            // Now the reverse flow for the ACKs
+
+            match = new Match();
+            actions = new ArrayList<Action>();
+
+            match.setField(MatchType.DL_TYPE, EtherTypes.IPv4.shortValue());
+            match.setField(MatchType.NW_DST, source.getNetworkAddress());
+
+            actions.add(new Output(lastNodeConnector));
+            //actions.add(new PopVlan());
+
+
+            match.setField(MatchType.IN_PORT, tailNodeConnector);
+
+            flow = new Flow(match, actions);
+            flow.setIdleTimeout((short) 12345);
+            flow.setHardTimeout((short) 0);
+            flow.setPriority(DEFAULT_IPSWITCH_PRIORITY);
+
+            log.warn("Adding reverse flow at tail: " + flow.toString());
+
+            fe = new FlowEntry(policyName, flowName, flow, tailNode);
+
+            flows.add(fe);
+
+            // Now the head node connector if it's the destination node
+
+            if (headNode.equals(destinationNode)) {
+
+                match = new Match();
+                actions = new ArrayList<Action>();
+
+                match.setField(MatchType.DL_TYPE, EtherTypes.IPv4.shortValue());
+                match.setField(MatchType.NW_DST, destination.getNetworkAddress());
+
+                actions.add(new SetDlDst(destination.getDataLayerAddressBytes()));
+                actions.add(new Output(destinationNodeConnector));
+                //actions.add(new PopVlan());
+
+
+                match.setField(MatchType.IN_PORT, headNodeConnector);
+
+                flow = new Flow(match, actions);
+                flow.setIdleTimeout((short) 12345);
+                flow.setHardTimeout((short) 0);
+                flow.setPriority(DEFAULT_IPSWITCH_PRIORITY);
+
+                log.warn("Adding flow at destination: " + flow.toString());
+
+                fe = new FlowEntry(policyName, flowName, flow, headNode);
+
+                flows.add(fe);
+
+                // reverse flow for ACKs
+
+                match = new Match();
+                actions = new ArrayList<Action>();
+
+                match.setField(MatchType.DL_TYPE, EtherTypes.IPv4.shortValue());
+                match.setField(MatchType.NW_DST, source.getNetworkAddress());
+
+                actions.add(new Output(headNodeConnector));
+                //actions.add(new PopVlan());
+
+
+                match.setField(MatchType.IN_PORT, destinationNodeConnector);
+
+                flow = new Flow(match, actions);
+                flow.setIdleTimeout((short) 12345);
+                flow.setHardTimeout((short) 0);
+                flow.setPriority(DEFAULT_IPSWITCH_PRIORITY);
+
+                log.warn("Adding reverse flow at destination: " + flow.toString());
+
+                fe = new FlowEntry(policyName, flowName, flow, headNode);
+
+                flows.add(fe);
+            }
+
+            lastNodeConnector = headNodeConnector;
+
+        }
+
+        // Get existing Flow Entrys for this group, and remove them
+
+        List<FlowEntry> existing = forwardingRulesManager.getFlowEntriesForGroup(policyName);
+        log.warn("Uninstalling existing "+existing.size()+" Flow Entrys for "+policyName);
+        for(FlowEntry fe: existing) {
+            forwardingRulesManager.uninstallFlowEntry(fe);
+        }
+
+        // Now add the flows using the rules manager
+
+        for(FlowEntry fe: flows) {
+                if(!forwardingRulesManager.installFlowEntry(fe).isSuccess()) {
+                    log.warn("Error installing Flow Entry : "+fe.toString());
+                }
+        }
+
+        return flows;
+    }
 
     /**
      * Function called by the dependency manager when all the required
@@ -170,30 +360,42 @@ public class MultiPath implements
 
     String myNodeString(Node node) {
         String nodeName = node.toString();
-        if(nodeName.contains(":01")) return "SEA";
-        if(nodeName.contains(":02")) return "SFO";
-        if(nodeName.contains(":03")) return "LAX";
-        if(nodeName.contains(":04")) return "ATL";
-        if(nodeName.contains(":05")) return "IAD";
-        if(nodeName.contains(":06")) return "EWR";
-        if(nodeName.contains(":07")) return "SLC";
-        if(nodeName.contains(":08")) return "MCI";
-        if(nodeName.contains(":09")) return "ORD";
-        if(nodeName.contains(":0a")) return "CLE";
-        if(nodeName.contains(":0b")) return "IAH";
+        if (nodeName.contains(":01"))
+            return "SEA";
+        if (nodeName.contains(":02"))
+            return "SFO";
+        if (nodeName.contains(":03"))
+            return "LAX";
+        if (nodeName.contains(":04"))
+            return "ATL";
+        if (nodeName.contains(":05"))
+            return "IAD";
+        if (nodeName.contains(":06"))
+            return "EWR";
+        if (nodeName.contains(":07"))
+            return "SLC";
+        if (nodeName.contains(":08"))
+            return "MCI";
+        if (nodeName.contains(":09"))
+            return "ORD";
+        if (nodeName.contains(":0a"))
+            return "CLE";
+        if (nodeName.contains(":0b"))
+            return "IAH";
         return "???";
     }
-
-
 
     void init() {
 
         log.info("MultiPath Starting up");
 
         // Start up the link utilization calculator
-        ScheduledExecutorService dataRateCalculator = Executors.newSingleThreadScheduledExecutor();
+        ScheduledExecutorService dataRateCalculator = Executors
+                .newSingleThreadScheduledExecutor();
         calculateDataRates = new CalculateDataRates();
-        dataRateCalculator.scheduleAtFixedRate(calculateDataRates, 0,  calculateDataRates.DATARATE_CALCULATOR_INTERVAL, TimeUnit.SECONDS);
+        dataRateCalculator.scheduleAtFixedRate(calculateDataRates, 0,
+                calculateDataRates.DATARATE_CALCULATOR_INTERVAL,
+                TimeUnit.SECONDS);
 
         pathCounter = new ConcurrentHashMap<EndPoints, Integer>();
         pathSelectors = new HashSet<IPathSelector>();
@@ -204,7 +406,7 @@ public class MultiPath implements
 
         // Select default path selector.
         currentPathSelector = new ShortestPathSelector(this);
-        //currentPathSelector = new RoundRobinPathSelector(this);
+        // currentPathSelector = new RoundRobinPathSelector(this);
         // Select the default path calculator.
         currentPathCalculator = new DijkstraPathCalculator();
 
@@ -214,6 +416,7 @@ public class MultiPath implements
         // Add path selectors to map.
 
         pathSelectors.add(new ShortestPathSelector(this));
+        pathSelectors.add(new LongestPathSelector(this));
         pathSelectors.add(new RandomPathSelector(this));
         pathSelectors.add(new HashIpPathSelector(this));
         pathSelectors.add(new HashPortPathSelector(this));
@@ -293,28 +496,26 @@ public class MultiPath implements
         Set<HostNodeConnector> allHosts = this.hostTracker.getAllHosts();
         log.info("recalculateDone {} hosts", allHosts.size());
         /*
-        for (HostNodeConnector host : allHosts) {
-            Set<Node> switches = preparePerHostRules(host);
-            if (switches != null) {
-                // This will refresh existing rules, by overwriting
-                // the previous ones
-                installPerHostRules(host, switches);
-                pruneExcessRules(switches);
-            }
-        }
-        */
+         * for (HostNodeConnector host : allHosts) { Set<Node> switches =
+         * preparePerHostRules(host); if (switches != null) { // This will
+         * refresh existing rules, by overwriting // the previous ones
+         * installPerHostRules(host, switches); pruneExcessRules(switches); } }
+         */
     }
 
     private void pruneExcessRules(Set<Node> switches) {
         for (Node swId : switches) {
             List<FlowEntry> pl = tobePrunedPos.get(swId);
             if (pl != null) {
-                log.debug("Policies for Switch: {} in the list to be deleted: {}", swId, pl);
+                log.debug(
+                        "Policies for Switch: {} in the list to be deleted: {}",
+                        swId, pl);
                 Iterator<FlowEntry> plIter = pl.iterator();
-                //for (Policy po: pl) {
+                // for (Policy po: pl) {
                 while (plIter.hasNext()) {
                     FlowEntry po = plIter.next();
-                    log.error("Removing Policy, Switch: {} Policy: {}", swId, po);
+                    log.error("Removing Policy, Switch: {} Policy: {}", swId,
+                            po);
                     this.forwardingRulesManager.uninstallFlowEntry(po);
                     plIter.remove();
                 }
@@ -322,575 +523,6 @@ public class MultiPath implements
             // tobePrunedPos.remove(swId);
         }
     }
-
-    /**
-     * Calculate the per-Host rules to be installed in the rulesDB,
-     * and that will later on be installed in HW, this routine will
-     * implicitly calculate the shortest path tree among the switch
-     * to which the host is attached and all the other switches in the
-     * network and will automatically create all the rules that allow
-     * a /32 destination IP based forwarding, as in traditional IP
-     * networks.
-     *
-     * @param host Host for which we are going to prepare the rules in the rulesDB
-     *
-     * @return A set of switches touched by the calculation
-     */
-    private Set<Node> preparePerHostRules(HostNodeConnector host) {
-        if (host == null) {
-            return null;
-        }
-
-        //TODO: race condition! unset* functions can make these null.
-        if (this.routing == null) {
-            return null;
-        }
-        if (this.switchManager == null) {
-            return null;
-        }
-        if (this.rulesDB == null) {
-            return null;
-        }
-
-        Node rootNode = host.getnodeconnectorNode();
-        Set<Node> nodes = this.switchManager.getNodes();
-        Set<Node> switchesToProgram = new HashSet<Node>();
-        HostNodePair key;
-        HashMap<NodeConnector, FlowEntry> pos;
-        FlowEntry po;
-
-
-        // for all nodes in the system
-        for (Node node : nodes) {
-            if (node.equals(rootNode)) {
-                // We skip it because for the node with host attached
-                // we will process in every case even if there are no
-                // routes
-                continue;
-            }
-
-            List<Edge> links;
-            //Path res = this.routing.getRoute(node, rootNode);
-
-
-            ExtendedPath res = currentPathSelector.selectPath(node, rootNode);
-
-
-            /*
-            if ((res == null) || ((links = res.getEdges()) == null)) {
-                // No route from node to rootNode can be found, back out any
-                // existing forwarding rules if they exist.
-                log.debug("NO Route/Path between SW[{}] --> SW[{}] cleaning " +
-                        "potentially existing entries", node, rootNode);
-                key = new HostNodePair(host, node);
-                pos = this.rulesDB.get(key);
-                if (pos != null) {
-                    for (Map.Entry<NodeConnector, FlowEntry> e : pos.entrySet()) {
-                        po = e.getValue();
-                        if (po != null) {
-                            // uninstall any existing rules we put in the
-                            // ForwardingRulesManager
-                            this.forwardingRulesManager.uninstallFlowEntry(po);
-                        }
-                    }
-                    this.rulesDB.remove(key);
-                }
-                continue;
-            }
-            */
-
-            log.debug("Route between SW[{}] --> SW[{}]", node, rootNode);
-            Node currNode = node;
-            key = new HostNodePair(host, currNode);
-
-            // for each link in the route from here to there
-
-            for (Edge link : res.getEdges()) {
-                if (link == null) {
-                    log.error("Could not retrieve the Link");
-                    // TODO: should we keep going?
-                    continue;
-                }
-
-                log.debug(link.toString());
-
-                /*
-                // Index all the switches to be programmed
-                updatePerHostRuleInSW(host, currNode, rootNode, link, key);
-                if ((this.rulesDB.get(key)) != null) {
-                    // Calling updatePerHostRuleInSW() doesn't guarantee that
-                    // rules will be added in currNode (e.g, there is only one
-                    // link from currNode to rootNode This check makes sure that
-                    // there are some rules in the rulesDB for the given key
-                    // prior to adding switch to switchesToProgram
-                    //
-                    switchesToProgram.add(currNode);
-                }
-                currNode = link.getHeadNodeConnector().getNode();
-                key = new HostNodePair(host, currNode);
-                */
-            }
-        }
-
-        // This rule will be added no matter if any topology is built
-        // or no, it serve as a way to handle the case of a node with
-        // multiple hosts attached to it but not yet connected to the
-        // rest of the world
-        switchesToProgram.add(rootNode);
-        //updatePerHostRuleInSW(host, rootNode, rootNode, null,
-        //                      new HostNodePair(host, rootNode));
-
-        //      log.debug("Getting out at the end!");
-
-
-        return switchesToProgram;
-    }
-
-
-    /**
-     * (from simpleforward)
-     * Calculate the per-Host rules to be installed in the rulesDB
-     * from a specific switch when a host facing port comes up.
-     * These rules will later on be installed in HW. This routine
-     * will implicitly calculate the shortest path from the switch
-     * where the port has come up to the switch where host is ,
-     * attached and will automatically create all the rules that allow
-     * a /32 destination IP based forwarding, as in traditional IP
-     * networks.
-     *
-     * @param host Host for which we are going to prepare the rules in the rulesDB
-     * @param swId Switch ID where the port has come up
-     *
-     * @return A set of switches touched by the calculation
-     */
-    private Set<Node> preparePerHostPerSwitchRules(HostNodeConnector host,
-            Node node, NodeConnector swport) {
-        if ((host == null) || (node == null)) {
-            return null;
-        }
-        if (this.routing == null) {
-            return null;
-        }
-        if (this.switchManager == null) {
-            return null;
-        }
-        //if (this.rulesDB == null) {
-        //    return null;
-        //}
-
-        Node rootNode = host.getnodeconnectorNode();
-        Set<Node> switchesToProgram = new HashSet<Node>();
-        HostNodePair key;
-        Map<NodeConnector, FlowEntry> pos;
-        FlowEntry po;
-        List<Edge> links;
-
-        // We obtain the path from the node to the rootNode
-
-        //Path res = this.routing.getRoute(node, rootNode);
-
-        ExtendedPath res = currentPathSelector.selectPath(node, rootNode);
-
-
-
-        if ((res == null) || ((links = res.getEdges()) == null)) {
-            // the routing service doesn't know how to get there from here
-            log.info("NO Route/Path between SW[{}] --> SW[{}] cleaning " +
-                    "potentially existing entries", node, rootNode);
-            key = new HostNodePair(host, node);
-            pos = this.rulesDB.get(key);
-            if (pos != null) {
-                for (Map.Entry<NodeConnector, FlowEntry> e : pos.entrySet()) {
-                    po = e.getValue();
-                    if (po != null) {
-                        //Uninstall the policy
-                        this.forwardingRulesManager.uninstallFlowEntry(po);
-                    }
-                }
-                this.rulesDB.remove(key);
-            }
-            return null;
-        }
-
-        log.info("Route between SW[{}] --> SW[{}]", node, rootNode);
-        Integer curr;
-        Node currNode = node;
-        key = new HostNodePair(host, currNode);
-        Edge link;
-        for (curr = 0; curr < links.size(); curr++) {
-            link = links.get(curr);
-            if (link == null) {
-                log.error("Could not retrieve the Link");
-                continue;
-            }
-
-            log.info("Link [{}/{}] --> [{}/{}]", new Object[] {
-                    currNode, link.getHeadNodeConnector(),
-                    link.getHeadNodeConnector().getNode(),
-                    link.getTailNodeConnector()});
-
-            // Index all the switches to be programmed
-            switchesToProgram.add(currNode);
-            updatePerHostRuleInSW(host, currNode, rootNode, link, key);
-            break; // come out of the loop for port up case, interested only in programming one switch
-        }
-
-        // This rule will be added no matter if any topology is built
-        // or no, it serve as a way to handle the case of a node with
-        // multiple hosts attached to it but not yet connected to the
-        // rest of the world
-        // switchesToProgram.add(rootNode);
-        //updatePerHostRuleInSW(host, rootNode,
-        //                                        rootNode, null,
-        //                                        new HostNodePair(host, rootNode),ports);
-
-        //      log.debug("Getting out at the end!");
-        return switchesToProgram;
-    }
-
-    /**
-     * Routine that fetch the per-Host rules from the rulesDB and
-     * install in HW, the one having the same match rules will be
-     * overwritten silently.
-     *
-     * @param host host for which we want to install in HW the per-Host rules
-     * @param switchesToProgram list of switches to be programmed in
-     * HW, usually are them all, but better to be explicit, that list
-     * may change with time based on new switch addition/removal
-     *
-     * @return a return code that convey the programming status of the HW
-     */
-    private RulesProgrammingReturnCode installPerHostRules(
-            HostNodeConnector host, Set<Node> switchesToProgram) {
-        RulesProgrammingReturnCode retCode = RulesProgrammingReturnCode.SUCCESS;
-        if (host == null || switchesToProgram == null) {
-            return RulesProgrammingReturnCode.FAILED_WRONG_PARAMS;
-        }
-        Map<NodeConnector, FlowEntry> pos;
-        FlowEntry po;
-        // Now program every single switch
-        //log.info("Inside installPerHostRules");
-        for (Node swId : switchesToProgram) {
-            HostNodePair key = new HostNodePair(host, swId);
-            pos = this.rulesDB.get(key);
-            if (pos == null) {
-                continue;
-            }
-            for (Map.Entry<NodeConnector, FlowEntry> e : pos.entrySet()) {
-                po = e.getValue();
-                if (po != null) {
-                    // Populate the Policy field now
-                    Status poStatus = this.forwardingRulesManager.modifyOrAddFlowEntry(po);
-                    if (!poStatus.isSuccess()) {
-                        log.error("Failed to install policy: "
-                                + po.getGroupName() + " ("
-                                + poStatus.getDescription() + ")");
-
-                        retCode = RulesProgrammingReturnCode.FAILED_FEW_SWITCHES;
-                        // Remove the entry from the DB, it was not installed!
-                        this.rulesDB.remove(key);
-                    } else {
-                        log.info("Successfully installed policy "
-                                + po.toString() + " on switch " + swId);
-                    }
-                } else {
-                    log.error("Cannot find a policy for SW:({}) Host: ({})",
-                              swId, host);
-                    /* // Now dump every single rule */
-                    /* for (HostNodePair dumpkey : this.rulesDB.keySet()) { */
-                    /*  po = this.rulesDB.get(dumpkey); */
-                    /*  log.debug("Dumping entry H{" + dumpkey.getHost() + "} S{" + dumpkey.getSwitchId() + "} = {" + (po == null ? "null policy" : po)); */
-                    /* } */
-                }
-            }
-        }
-        //log.info("Leaving installPerHostRules");
-        return retCode;
-    }
-
-    /**
-     * Cleanup all the host rules for a given host
-     *
-     * @param host Host for which the host rules need to be cleaned
-     * up, the host could be null in that case it match all the hosts
-     *
-     * @return a return code that convey the programming status of the HW
-     */
-    private RulesProgrammingReturnCode uninstallPerHostRules(HostNodeConnector host) {
-        RulesProgrammingReturnCode retCode = RulesProgrammingReturnCode.SUCCESS;
-        Map<NodeConnector, FlowEntry> pos;
-        FlowEntry po;
-        // Now program every single switch
-
-        for (HostNodePair key : this.rulesDB.keySet()) {
-            if (host == null || key.getHost().equals(host)) {
-                pos = this.rulesDB.get(key);
-                for (Map.Entry<NodeConnector, FlowEntry> e : pos.entrySet()) {
-                    po = e.getValue();
-                    if (po != null) {
-                        // Uninstall the policy
-                        this.forwardingRulesManager.uninstallFlowEntry(po);
-                    }
-                }
-                this.rulesDB.remove(key);
-            }
-        }
-        return retCode;
-    }
-
-    /**
-     * Cleanup all the host rules for a given node, triggered when the
-     * switch disconnects, so there is no reason for Hw cleanup
-     * because it's disconnected anyhow
-     * TBD - Revisit above stmt in light of CSCus88743
-     * @param targetNode Node for which we want to do cleanup
-     *
-     */
-    private void uninstallPerNodeRules(Node targetNode) {
-        //RulesProgrammingReturnCode retCode = RulesProgrammingReturnCode.SUCCESS;
-        Map<NodeConnector, FlowEntry> pos;
-        FlowEntry po;
-
-        // Now program every single switch
-        for (HostNodePair key : this.rulesDB.keySet()) {
-            Node node = key.getNode();
-            if (targetNode == null || node.equals(targetNode)) {
-                log.debug("Work on {} host {}", node, key.getHost());
-                pos = this.rulesDB.get(key);
-                for (Map.Entry<NodeConnector, FlowEntry> e : pos.entrySet()) {
-                    po = e.getValue();
-                    if (po != null) {
-                        // Uninstall the policy
-                        this.forwardingRulesManager.uninstallFlowEntry(po);
-                    }
-                }
-                log.debug("Remove {}", key);
-                this.rulesDB.remove(key);
-            }
-        }
-    }
-
-    /**
-     * Cleanup all the host rules currently present in the rulesDB
-     *
-     * @return a return code that convey the programming status of the HW
-     */
-    private RulesProgrammingReturnCode uninstallPerHostRules() {
-        return uninstallPerHostRules(null);
-    }
-
-
-    /**
-     * Populates <tt>rulesDB</tt> with rules specifying how to reach
-     * <tt>host</tt> from <tt>currNode</tt> assuming that:
-     * <ul>
-     * <li><tt>host</tt> is attached to <tt>rootNode</tt>
-     * <li><tt>link</tt> is the next part of the path to reach <tt>rootNode</tt>
-     * from <tt>currNode</tt>
-     * <li><tt>rulesDB.get(key)</tt> represents the list of rules stored about
-     * <tt>host</tt> at <tt>currNode</tt>
-     * </ul>
-     *
-     * @param host
-     *            The host to be reached.
-     * @param currNode
-     *            The current node being processed.
-     * @param rootNode
-     *            The node to be reached. Really, the switch which host is
-     *            attached to.
-     * @param link
-     *            The link to follow from curNode to get to rootNode
-     * @param key
-     *            The key to store computed rules at in the rulesDB. For now,
-     *            this is a {@link HostNodePair} of host and currNode.
-     */
-    private void updatePerHostRuleInSW(HostNodeConnector host, Node currNode,
-            Node rootNode, Edge link, HostNodePair key) {
-
-        // only the link parameter is optional
-        if (host == null || key == null || currNode == null || rootNode == null) {
-            return;
-        }
-
-        Set<NodeConnector> ports = new HashSet<NodeConnector>();
-        // add a special port of type ALL and port 0 to represent the node
-        // without specifying a port on that node
-        ports.add(NodeConnectorCreator.createNodeConnector(
-                NodeConnectorIDType.ALL, NodeConnector.SPECIALNODECONNECTORID,
-                currNode));
-
-        HashMap<NodeConnector, FlowEntry> pos = this.rulesDB.get(key);
-        if (pos == null) {
-            pos = new HashMap<NodeConnector, FlowEntry>();
-        }
-
-        for (NodeConnector inPort : ports) {
-            // skip the port connected to the target host
-            if (currNode.equals(rootNode)
-                    && (host.getnodeConnector().equals(inPort))) {
-                continue;
-            }
-
-            // remove the current rule, if any
-            FlowEntry removed_po = pos.remove(inPort);
-            Match match = new Match();
-            List<Action> actions = new ArrayList<Action>();
-
-            // @TODO is this correct?
-            // IP destination based forwarding on /32 entries only!
-            match.setField(MatchType.DL_TYPE, EtherTypes.IPv4.shortValue());
-            match.setField(MatchType.NW_DST, host.getNetworkAddress());
-
-            /* Action for the policy is to forward to a port except on the
-             * switch where the host sits, which is to rewrite also the MAC
-             * and to forward on the Host port */
-            NodeConnector outPort = null;
-
-            if (currNode.equals(rootNode)) {
-                /* If we're at the root node, then rewrite the DL addr and
-                 * possibly pop the VLAN tag. This allows for MAC rewriting
-                 * in the core of the network assuming we can uniquely ID
-                 * packets based on IP address. */
-
-                outPort = host.getnodeConnector();
-                if (inPort.equals(outPort)) {
-                    // TODO: isn't this code skipped already by the above continue?
-                    // skip the host port
-                    continue;
-                }
-                actions.add(new SetDlDst(host.getDataLayerAddressBytes()));
-
-                if (!inPort.getType().equals(NodeConnectorIDType.ALL)) {
-                    // Container mode: at the destination switch, we need to strip out the tag (VLAN)
-                    actions.add(new PopVlan());
-                }
-            } else {
-                // currNode is NOT the rootNode, find the next hop and create a rule
-                if (link != null) {
-                    outPort = link.getTailNodeConnector();
-                    if (inPort.equals(outPort)) {
-                        // skip the outgoing port
-                        continue;
-                    }
-
-                    // If outPort is network link, add VLAN tag
-                    if (topologyManager.isInternal(outPort)) {
-                        log.info("outPort {}/{} is internal uplink port",
-                                currNode, outPort);
-                    } else {
-                        log.info("outPort {}/{} is host facing port",
-                                currNode, outPort);
-                    }
-
-                    if ((!inPort.getType().equals(NodeConnectorIDType.ALL))
-                        && (topologyManager.isInternal(outPort))) {
-                        Node nextNode = link.getHeadNodeConnector()
-                                            .getNode();
-                        // TODO: Replace this with SAL equivalent
-                        //short tag = container.getTag((Long)nextNode.getNodeID());
-                        short tag = 0;
-                        if (tag != 0) {
-                            log.info("adding SET_VLAN {} for traffic " +
-                                    "leaving {}/{} toward switch {}",
-                                    new Object[] { tag, currNode, outPort,
-                                    nextNode});
-                            actions.add(new SetVlanId(tag));
-                        } else {
-                            log.info("No tag assigned to switch {}", nextNode);
-                        }
-                    }
-                }
-            }
-            if (outPort != null) {
-                actions.add(new Output(outPort));
-            }
-            if (!inPort.getType().equals(NodeConnectorIDType.ALL)) {
-                // include input port in the flow match field
-                match.setField(MatchType.IN_PORT, inPort);
-
-                if (topologyManager.isInternal(inPort)) {
-                    log.info("inPort {}/{} is internal uplink port", currNode,
-                            inPort);
-                } else {
-                    log.info("inPort {}/{} is host facing port", currNode,
-                            inPort);
-                }
-
-                // for incoming network link; if the VLAN tag is defined, include it for incoming flow matching
-                if (topologyManager.isInternal(inPort)) {
-                    // TODO: Replace this with SAL equivalent
-                    //short tag = container.getTag((Long)currNode.getNodeID());
-                    short tag = 0;
-                    if (tag != 0) {
-                        log.info("adding MATCH VLAN {} for traffic entering" +
-                                "  {}/{}",
-                                new Object[] {tag, currNode, inPort});
-                        match.setField(MatchType.DL_VLAN, tag);
-                    } else {
-                        log.info("No tag assigned to switch {}", currNode);
-                    }
-                }
-            }
-            // Make sure the priority for IP switch entries is
-            // set to a level just above default drop entries
-            Flow flow = new Flow(match, actions);
-            flow.setIdleTimeout((short) 0);
-            flow.setHardTimeout((short) 0);
-            flow.setPriority(DEFAULT_IPSWITCH_PRIORITY);
-
-            String policyName = host.getNetworkAddress().getHostAddress()
-                    + "/32";
-            String flowName = "["
-                    + (!inPort.getType().equals(NodeConnectorIDType.ALL) ?
-                       (inPort.getID()).toString()
-                       + "," : "")
-                    + host.getNetworkAddress().getHostAddress() + "/32 on N "
-                    + currNode + "]";
-
-            log.info("Adding flowName {}",flowName);
-
-            FlowEntry po = new FlowEntry(policyName, flowName, flow, currNode);
-
-            /* Now save the rule in the DB rule, so on updates from topology we
-             * can selectively */
-            pos.put(inPort, po);
-            this.rulesDB.put(key, pos);
-            if (!inPort.getType().equals(NodeConnectorIDType.ALL)) {
-                log.info("Adding Match(inPort = {} , DIP = {})" +
-                        " Action(outPort= {}) to node {}",
-                        new Object[] { inPort,
-                        host.getNetworkAddress().getHostAddress(),
-                        outPort, currNode});
-                if ((removed_po != null)
-                        && (!po.getFlow().getMatch().equals(
-                                removed_po.getFlow().getMatch()))) {
-                    log.info("Old Flow match: {}, New Flow match: {}",
-                            removed_po.getFlow().getMatch(), po.getFlow()
-                                    .getMatch());
-                    addTobePrunedPolicy(currNode, removed_po, po);
-                }
-
-            } else {
-                log.debug("Adding policyMatch(DIP = {}) Action(outPort= {}) " +
-                        "to node {}", new Object[] {
-                        host.getNetworkAddress().getHostAddress(), outPort,
-                        currNode});
-            }
-        }
-    }
-
-    void addTobePrunedPolicy(Node swId, FlowEntry po, FlowEntry new_po) {
-        List<FlowEntry> pl = tobePrunedPos.get(swId);
-        if (pl == null) {
-            pl = new LinkedList<FlowEntry>();
-            tobePrunedPos.put(swId, pl);
-        }
-        pl.add(po);
-        log.info("Adding Pruned Policy for SwId: {}", swId);
-        log.info("Old Policy: {}", po);
-        log.info("New Policy: {}", new_po);
-    }
-
 
     /**
      * A Host facing port has come up in a container.
@@ -905,30 +537,10 @@ public class MultiPath implements
             // Not yet ready to process all the updates
             return;
         }
-        log.info("Host Facing Port in a container came up, install the rules for all hosts from this port !");
+        log.info("Host Facing Port {} in Node {} came up!",
+                swPort.getNodeConnectorIdAsString(), node.getNodeIDString());
         Set<HostNodeConnector> allHosts = this.hostTracker.getAllHosts();
-        log.info("updateRules {} hosts", allHosts.size());
-
-        /*
-        for (HostNodeConnector host : allHosts) {
-            if (node.equals(host.getnodeconnectorNode())) {
-
-                 // This host resides behind the same switch and port for which a port up
-                 // message is received. Ideally this should not happen, but if it does,
-                 // don't program any rules for this host
-
-                continue;
-            }
-            Set<Node> switches = preparePerHostPerSwitchRules(host, node,
-                    swPort);
-            if (switches != null) {
-                // This will refresh existing rules, by overwriting
-                // the previous ones
-                installPerHostRules(host, switches);
-            }
-
-        }
-        */
+        log.info("There are {} hosts", allHosts.size());
 
     }
 
@@ -937,10 +549,6 @@ public class MultiPath implements
         if (host == null) {
             return;
         }
-        Set<Node> switches = preparePerHostRules(host);
-        if (switches != null) {
-            installPerHostRules(host, switches);
-        }
     }
 
     @Override
@@ -948,7 +556,6 @@ public class MultiPath implements
         if (host == null) {
             return;
         }
-        uninstallPerHostRules(host);
     }
 
     // This comes from the Inventory Listener
@@ -958,11 +565,10 @@ public class MultiPath implements
         if (node == null) {
             return;
         }
-        //log.info("Node ID {}", node.getNodeIDString());
+        // log.info("Node ID {}", node.getNodeIDString());
         switch (type) {
         case REMOVED:
-            log.info("Node {} gone, doing a cleanup", node);
-            uninstallPerNodeRules(node);
+            log.info("Node {} gone", node);
             break;
         case ADDED:
             log.info("Node {} added", node);
@@ -1032,8 +638,6 @@ public class MultiPath implements
     private void handleNodeConnectorStatusDown(NodeConnector nodeConnector) {
         log.info("{} is down", nodeConnector);
     }
-
-
 
     /**
      * Function called by the dependency manager when at least one dependency
@@ -1109,10 +713,72 @@ public class MultiPath implements
             /* Get pre-calculated paths. */
             Set<ExtendedPath> paths = pathFinder.getPaths(srcNode, dstNode);
 
-            if(paths == null) return null;
+            if (paths == null)
+                return null;
 
             for (ExtendedPath path : paths) {
                 if (path.getEdges().size() < bestPathHops) {
+                    bestPath = path;
+                    bestPathHops = path.getEdges().size();
+                }
+            }
+
+            return bestPath;
+
+        }
+    }
+
+    /**
+     * Selects a path using the longest path (most hops).
+     *
+     * @author Julian Bunn
+     */
+    protected class LongestPathSelector implements IPathSelector {
+        /**
+         * The path finder service to get the paths between source and
+         * destination nodes.
+         */
+        private IPathFinderService pathFinder;
+
+        /**
+         * Constructor.
+         *
+         * @param pathFinder
+         *            The path finder service.
+         */
+        public LongestPathSelector(IPathFinderService pathFinder) {
+            this.pathFinder = pathFinder;
+        }
+
+        @Override
+        public String getName() {
+            return "longestpathselector";
+        }
+
+        @Override
+        public void setArgs(String args) {
+            // Do nothing.
+        }
+
+        @Override
+        public ExtendedPath selectPath(Node srcNode, Node dstNode) {
+            return this.selectPath(srcNode, dstNode, null);
+        }
+
+        @Override
+        public ExtendedPath selectPath(Node srcNode, Node dstNode, Match match) {
+            /* The best path, i.e. the one with the least hops. */
+            ExtendedPath bestPath = null;
+            /* The number of hops on the best path. */
+            int bestPathHops = Integer.MIN_VALUE;
+            /* Get pre-calculated paths. */
+            Set<ExtendedPath> paths = pathFinder.getPaths(srcNode, dstNode);
+
+            if (paths == null)
+                return null;
+
+            for (ExtendedPath path : paths) {
+                if (path.getEdges().size() > bestPathHops) {
                     bestPath = path;
                     bestPathHops = path.getEdges().size();
                 }
@@ -1353,7 +1019,8 @@ public class MultiPath implements
          * @param pathCache
          *            path cache service.
          */
-        public RoundRobinPathSelector(IPathFinderService pathFinder, IPathCacheService pathCache) {
+        public RoundRobinPathSelector(IPathFinderService pathFinder,
+                IPathCacheService pathCache) {
             this.pathCache = pathCache;
             this.pathFinder = pathFinder;
             this.pathCounter = new ConcurrentHashMap<EndPoints, Integer>();
@@ -1384,7 +1051,7 @@ public class MultiPath implements
             Set<ExtendedPath> paths = this.pathFinder
                     .getPaths(srcNode, dstNode);
 
-            if(pathCache == null) {
+            if (pathCache == null) {
                 return null;
             }
 
@@ -1735,12 +1402,16 @@ public class MultiPath implements
 
         @Override
         public ExtendedPath selectPath(Node srcNode, Node dstNode, Match match) {
-            /* The best path, i.e. the one with the largest minimum bandwidth on all its links */
+            /*
+             * The best path, i.e. the one with the largest minimum bandwidth on
+             * all its links
+             */
             ExtendedPath bestPath = null;
             /* Best available bandwidth, i.e. capacity - pathBitRate. */
             long bestAvailableBandwidth = 0;
             /* Get pre-calculated paths. */
-            Set<ExtendedPath> paths = this.pathFinder.getPaths(srcNode, dstNode);
+            Set<ExtendedPath> paths = this.pathFinder
+                    .getPaths(srcNode, dstNode);
 
             // If we do not have any paths (yet).
             if (paths == null) {
@@ -1751,8 +1422,9 @@ public class MultiPath implements
                     .getGlobalInstance(ITopologyManager.class, this);
             Map<Edge, Set<Property>> edgeTopology = topologyManager.getEdges();
 
-            // Get the prevailing data rates on all links from the DataRate calculator
-            Map<Edge,Double> dataRates = calculateDataRates.getEdgeDataRates();
+            // Get the prevailing data rates on all links from the DataRate
+            // calculator
+            Map<Edge, Double> dataRates = calculateDataRates.getEdgeDataRates();
 
             // Calculate path available bandwidth. The higher the better.
             for (ExtendedPath path : paths) {
@@ -1768,20 +1440,24 @@ public class MultiPath implements
                         for (Property property : edgeTopology.get(link)) {
                             if (property.getName().equals(
                                     Bandwidth.BandwidthPropName)) {
-                                linkCapacity = ((Bandwidth) property).getValue();
+                                linkCapacity = ((Bandwidth) property)
+                                        .getValue();
                                 break;
                             }
                         }
                     }
 
-                    if(dataRates.containsKey(link)) {
-                        // The data rate value is in Bytes/second, so we multiply by 8 to get bits
+                    if (dataRates.containsKey(link)) {
+                        // The data rate value is in Bytes/second, so we
+                        // multiply by 8 to get bits
                         linkBitRate = dataRates.get(link).longValue() * 8;
                     }
 
-                    // Get the path's available bandwidth, i.e. the capacity minus the traffic
+                    // Get the path's available bandwidth, i.e. the capacity
+                    // minus the traffic
                     long availableBandwidth = linkCapacity - linkBitRate;
-                    if(availableBandwidth < 0) availableBandwidth = 0;
+                    if (availableBandwidth < 0)
+                        availableBandwidth = 0;
 
                     if (availableBandwidth < pathAvailableBandwidth) {
                         pathAvailableBandwidth = availableBandwidth;
@@ -1814,18 +1490,6 @@ public class MultiPath implements
          */
         private IPathFinderService pathFinder;
 
-        /**
-         * Constructor.
-         *
-         * @param pathFinder
-         *            Floodlight path finder service.
-         * @param floodlightProvider
-         *            Floodlight provider service.
-         * @param statisticsCollector
-         *            Floodlight statistic collector.
-         * @param flowCache
-         *            Floodlight flow cache service.
-         */
         public StrategyPathSelector(IPathFinderService pathFinder) {
             this.pathFinder = pathFinder;
         }
@@ -1871,6 +1535,10 @@ public class MultiPath implements
             IStatisticsManager statisticsManager = (IStatisticsManager) ServiceHelper
                     .getGlobalInstance(IStatisticsManager.class, this);
 
+            // Get the prevailing data rates on all links from the DataRate
+            // calculator
+            Map<Edge, Double> dataRates = calculateDataRates.getEdgeDataRates();
+
             // Calculate path capacity to flow ratio. The higher the better.
             for (ExtendedPath path : paths) {
                 List<Edge> links = path.getEdges();
@@ -1896,22 +1564,19 @@ public class MultiPath implements
 
                     // Get the flows on the source node
                     List<FlowOnNode> flowsOnNode = statisticsManager
-                            .getFlowsNoCache(link.getHeadNodeConnector()
+                            .getFlowsNoCache(link.getTailNodeConnector()
                                     .getNode());
                     if (flowsOnNode != null && flowsOnNode.size() > 0) {
                         linkFlows = flowsOnNode.size();
-                        for (FlowOnNode flowOnNode : flowsOnNode) {
-                            long byteCount = flowOnNode.getByteCount();
-                            long durationSeconds = flowOnNode
-                                    .getDurationSeconds();
-                            if (durationSeconds > 0)
-                                linkBitRate += (8 * byteCount)
-                                        / durationSeconds;
-
-                        }
                     }
 
-                    // Get the paths available bandwidth.
+                    if (dataRates.containsKey(link)) {
+                        // The data rate value is in Bytes/second, so we
+                        // multiply by 8 to get bits
+                        linkBitRate = dataRates.get(link).longValue() * 8;
+                    }
+
+                    // Get the path's available bandwidth.
                     if (linkCapacity - linkBitRate < pathAvailableBandwidth) {
                         pathAvailableBandwidth = linkCapacity - linkBitRate;
                         pathAvailableBandwidth = (pathAvailableBandwidth < 0) ? 0
@@ -1924,8 +1589,6 @@ public class MultiPath implements
                         }
                     } else {
                         if (linkCapacity < pathCapacityToFlowRatio) {
-                            // If link is empty us it in any case.
-                            // pathCapacityToFlowRatio = Double.MAX_VALUE;
                             // If link is empty but its capacity is below 80% of
                             // the fair share of a better link, don't use it
                             pathCapacityToFlowRatio = linkCapacity * 1.2;
@@ -2431,16 +2094,15 @@ public class MultiPath implements
                 linkCost.put(edge, 1);
             }
 
-
             // calculate paths
             while (hasPath) {
                 if (edgeMapTopology.size() == 0)
                     break;
 
-                //log.info("EdgeMapTopology");
-                //for(Edge e: edgeMapTopology.keySet()) {
-                //    log.info("Edge {}", e.toString());
-                //}
+                // log.info("EdgeMapTopology");
+                // for(Edge e: edgeMapTopology.keySet()) {
+                // log.info("Edge {}", e.toString());
+                // }
 
                 // Calculate the shortest path between two nodes
                 ExtendedPath path = calculateShortestPath(nodeMapTopology,
@@ -2457,18 +2119,17 @@ public class MultiPath implements
 
                 // Remove links from edge and node map topologies.
                 for (Edge link : path.getEdges()) {
-                    // JJB I think the edge to be removed should not be reversed here in any case
+                    // JJB I think the edge to be removed should not be reversed
+                    // here in any case
                     edgeMapTopology.remove(link);
                     /*
-                    if (destinationRooted) {
-                        edgeMapTopology.remove(link.reverse());
-                    } else {
-                        edgeMapTopology.remove(link);
-                    }
-                    */
+                     * if (destinationRooted) {
+                     * edgeMapTopology.remove(link.reverse()); } else {
+                     * edgeMapTopology.remove(link); }
+                     */
                     // Remove this edge where it appears in the nodeMapTopology
                     Map<Node, Set<Edge>> newNodeMapTopology = new HashMap<Node, Set<Edge>>();
-                    for(Node node: nodeMapTopology.keySet()) {
+                    for (Node node : nodeMapTopology.keySet()) {
                         Set<Edge> edges = nodeMapTopology.get(node);
                         edges.remove(link);
                         newNodeMapTopology.put(node, edges);
@@ -2598,7 +2259,8 @@ public class MultiPath implements
                         neighbor = link.getTailNodeConnector().getNode();
 
                     // links directed toward cnode will result in this condition
-                    if (neighbor.equals(cnode)) continue;
+                    if (neighbor.equals(cnode))
+                        continue;
 
                     if (linkCost == null || linkCost.get(link) == null)
                         weight = 1;
@@ -2652,8 +2314,7 @@ public class MultiPath implements
             ITopologyManager topologyManager = (ITopologyManager) ServiceHelper
                     .getGlobalInstance(ITopologyManager.class, this);
 
-            Map<Node, Set<Edge>> nodeTopology = topologyManager
-                    .getNodeEdges();
+            Map<Node, Set<Edge>> nodeTopology = topologyManager.getNodeEdges();
 
             Set<Node> switches = nodeTopology.keySet();
             Map<Edge, Boolean> links = this.setLinksActive(nodeTopology);
@@ -2940,8 +2601,7 @@ public class MultiPath implements
         Set<ExtendedPath> paths = new HashSet<ExtendedPath>();
 
         for (EndPoints endPoints : getAllEndPoints()) {
-            paths.addAll(getAllPaths(endPoints.getSrc(),
-                    endPoints.getDst()));
+            paths.addAll(getAllPaths(endPoints.getSrc(), endPoints.getDst()));
         }
 
         return paths;
@@ -2967,7 +2627,8 @@ public class MultiPath implements
             removePath(srcNode, dstNode);
 
         // Calculate the paths and put them into the path cache.
-        Set<ExtendedPath> pathSet = this.currentPathCalculator.calculatePaths(srcNode, dstNode);
+        Set<ExtendedPath> pathSet = this.currentPathCalculator.calculatePaths(
+                srcNode, dstNode);
         if (pathSet != null) {
             for (ExtendedPath path : pathSet) {
                 addPath(path);
@@ -3042,7 +2703,8 @@ public class MultiPath implements
                     "Path calculator {} not found. Using path calculator {} instead",
                     name, this.currentPathCalculator.getName());
         }
-        log.info("Path calculator set to {}", this.currentPathCalculator.getName());
+        log.info("Path calculator set to {}",
+                this.currentPathCalculator.getName());
 
         return this.currentPathCalculator;
     }
@@ -3084,12 +2746,13 @@ public class MultiPath implements
                         + " not in topology?");
                 continue;
             }
-/*
- *                     Bandwidth bwSrc = (Bandwidth) switchManager.getNodeConnectorProp(srcNC,
-                            Bandwidth.BandwidthPropName);
-                                                Bandwidth bwDst = (Bandwidth) switchManager.getNodeConnectorProp(dstNC,
-                            Bandwidth.BandwidthPropName)
- */
+            /*
+             * Bandwidth bwSrc = (Bandwidth)
+             * switchManager.getNodeConnectorProp(srcNC,
+             * Bandwidth.BandwidthPropName); Bandwidth bwDst = (Bandwidth)
+             * switchManager.getNodeConnectorProp(dstNC,
+             * Bandwidth.BandwidthPropName)
+             */
             long bandwidth = 0;
             for (Property property : edgeProperties) {
                 if (property.getName().equals(Bandwidth.BandwidthPropName)) {
@@ -3110,13 +2773,13 @@ public class MultiPath implements
         return pathCapacity;
     }
 
-
     @Override
     public synchronized ExtendedPath addPath(ExtendedPath path) {
-        //  Put path into endPointsToPathMap.
+        // Put path into endPointsToPathMap.
         EndPoints endPoints = path.getEndPoints();
-        if(!this.endPointsToExtendedPathMap.containsKey(endPoints)) {
-            this.endPointsToExtendedPathMap.put(endPoints, new HashSet<ExtendedPath>());
+        if (!this.endPointsToExtendedPathMap.containsKey(endPoints)) {
+            this.endPointsToExtendedPathMap.put(endPoints,
+                    new HashSet<ExtendedPath>());
         }
         this.endPointsToExtendedPathMap.get(endPoints).add(path);
 
@@ -3169,15 +2832,16 @@ public class MultiPath implements
 
         // Get and remove path object from endPointsToPathMap.
         EndPoints endPoints = new EndPoints(srcNode, dstNode);
-        for (Iterator<Map.Entry<EndPoints, Set<ExtendedPath>>>
-        iter = endPointsToExtendedPathMap.entrySet().iterator(); iter.hasNext();) {
+        for (Iterator<Map.Entry<EndPoints, Set<ExtendedPath>>> iter = endPointsToExtendedPathMap
+                .entrySet().iterator(); iter.hasNext();) {
             Map.Entry<EndPoints, Set<ExtendedPath>> entry = iter.next();
             if (entry.getKey().equals(endPoints)) {
                 paths.addAll(entry.getValue());
                 iter.remove();
             }
         }
-        if (this.endPointsToExtendedPathMap.get(endPoints) != null && this.endPointsToExtendedPathMap.get(endPoints).isEmpty()) {
+        if (this.endPointsToExtendedPathMap.get(endPoints) != null
+                && this.endPointsToExtendedPathMap.get(endPoints).isEmpty()) {
             this.endPointsToExtendedPathMap.remove(endPoints);
         }
 
@@ -3279,6 +2943,7 @@ public class MultiPath implements
             this.switchManager = null;
         }
     }
+
     public void setForwardingRulesManager(
             IForwardingRulesManager forwardingRulesManager) {
         log.debug("Setting ForwardingRulesManager");
