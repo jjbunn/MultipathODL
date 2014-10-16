@@ -12,10 +12,12 @@ import org.opendaylight.controller.sal.reader.NodeConnectorStatistics;
 import org.opendaylight.controller.sal.utils.ServiceHelper;
 import org.opendaylight.controller.statisticsmanager.IStatisticsManager;
 import org.opendaylight.controller.topologymanager.ITopologyManager;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class CalculateDataRates implements Runnable {
 
-
+    protected static Logger log = LoggerFactory.getLogger(CalculateDataRates.class);
     /** Last timestamp of Executor run */
     protected long lastDataRateTimestamp = System.currentTimeMillis();
     /** The interval for the Executor, in TimeUnit.SECONDS */
@@ -26,37 +28,60 @@ public class CalculateDataRates implements Runnable {
     protected ConcurrentHashMap<Edge, Long> linkBytesTransferred = new ConcurrentHashMap<Edge, Long>();
 
     public void run() {
+
         long thisDataRateTimestamp = System.currentTimeMillis();
 
-        ITopologyManager topologyManager = (ITopologyManager) ServiceHelper
-                .getGlobalInstance(ITopologyManager.class, this);
-        Map<Edge, Set<Property>> edgeTopology = topologyManager.getEdges();
+        try {
 
-        IStatisticsManager statisticsManager = (IStatisticsManager) ServiceHelper
-                .getGlobalInstance(IStatisticsManager.class, this);
+            //log.info("CalculateDataRates running");
 
-        // Elapsed time in seconds
-        double elapsedTime = 0.001 * (double) (thisDataRateTimestamp - lastDataRateTimestamp);
-        Set<Edge> currentEdges = edgeTopology.keySet();
+            ITopologyManager topologyManager = (ITopologyManager) ServiceHelper
+                    .getGlobalInstance(ITopologyManager.class, this);
 
-        for(Edge edge: currentEdges) {
-            // For this edge, find the nodeconnector of the tail (the source of the traffic)
-            NodeConnector tailNodeConnector = edge.getTailNodeConnector();
-            // Get the statistics for this NodeConnector
-            NodeConnectorStatistics ncStats = statisticsManager.getNodeConnectorStatistics(tailNodeConnector);
-            //long receiveBytes = ncStats.getReceiveByteCount();
-            long transmitBytes = ncStats.getTransmitByteCount();
-            long totalBytes = transmitBytes;
+            IStatisticsManager statisticsManager = (IStatisticsManager) ServiceHelper
+                    .getGlobalInstance(IStatisticsManager.class, this);
 
-            double dataRate = 0;
-            if(linkBytesTransferred.containsKey(edge) && linkDataRate.containsKey(edge)) {
-                // Already have a measurement for this edge
-                dataRate = (totalBytes - linkBytesTransferred.get(edge)) / elapsedTime;
+            if(topologyManager == null || statisticsManager == null) {
+                log.error("CalculateDataRates: topology or statistics Manager is null!");
+                return;
             }
-            linkBytesTransferred.put(edge, totalBytes);
-            linkDataRate.put(edge, dataRate);
-        }
 
+            Map<Edge, Set<Property>> edgeTopology = topologyManager.getEdges();
+
+
+
+            // Elapsed time in seconds
+            double elapsedTime = 0.001 * (double) (thisDataRateTimestamp - lastDataRateTimestamp);
+            Set<Edge> currentEdges = edgeTopology.keySet();
+
+            for (Edge edge : currentEdges) {
+                //log.info("Data rate calculator for edge {}", edge.toString());
+                // For this edge, find the nodeconnector of the tail (the source
+                // of the traffic)
+                NodeConnector tailNodeConnector = edge.getTailNodeConnector();
+                // Get the statistics for this NodeConnector
+                NodeConnectorStatistics ncStats = statisticsManager
+                        .getNodeConnectorStatistics(tailNodeConnector);
+                if(ncStats == null) continue;
+                // long receiveBytes = ncStats.getReceiveByteCount();
+                long transmitBytes = ncStats.getTransmitByteCount();
+                long totalBytes = transmitBytes;
+
+                double dataRate = 0;
+                if (linkBytesTransferred.containsKey(edge)
+                        && linkDataRate.containsKey(edge)) {
+                    // Already have a measurement for this edge
+                    dataRate = (totalBytes - linkBytesTransferred.get(edge))
+                            / elapsedTime;
+                }
+                linkBytesTransferred.put(edge, totalBytes);
+                linkDataRate.put(edge, dataRate);
+            }
+            //log.info("CalculateDataRates finished calculating {} edges",currentEdges.size());
+
+        } catch (Exception e) {
+            log.warn("CalculateDataRates exception {}", e);
+        }
 
         lastDataRateTimestamp = thisDataRateTimestamp;
     }

@@ -121,6 +121,8 @@ public class MultiPath implements IPathFinderService, IfNewHostNotify,
     private IStatisticsManager statisticsManager;
     private IForwardingRulesManager forwardingRulesManager;
 
+    private static ScheduledExecutorService dataRateCalculator;
+
     /** Counter for round robin path selection in a map: [EndPoints->Counter]. */
     protected ConcurrentHashMap<EndPoints, Integer> pathCounter;
     /** A set of available path selectors. */
@@ -390,7 +392,7 @@ public class MultiPath implements IPathFinderService, IfNewHostNotify,
         log.info("MultiPath Starting up");
 
         // Start up the link utilization calculator
-        ScheduledExecutorService dataRateCalculator = Executors
+        dataRateCalculator = Executors
                 .newSingleThreadScheduledExecutor();
         calculateDataRates = new CalculateDataRates();
         dataRateCalculator.scheduleAtFixedRate(calculateDataRates, 0,
@@ -445,6 +447,7 @@ public class MultiPath implements IPathFinderService, IfNewHostNotify,
     public void shutDown() {
         log.debug("Destroy caches given we are shutting down");
         destroyCaches();
+        dataRateCalculator.shutdown();
     }
 
     private void allocateCaches() {
