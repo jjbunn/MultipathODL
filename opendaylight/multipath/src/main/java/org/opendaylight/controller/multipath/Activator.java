@@ -18,6 +18,8 @@ import org.opendaylight.controller.forwardingrulesmanager.IForwardingRulesManage
 import org.opendaylight.controller.hosttracker.IfIptoHost;
 import org.opendaylight.controller.hosttracker.IfNewHostNotify;
 import org.opendaylight.controller.sal.core.ComponentActivatorAbstractBase;
+import org.opendaylight.controller.sal.packet.IDataPacketService;
+import org.opendaylight.controller.sal.packet.IListenDataPacket;
 import org.opendaylight.controller.sal.routing.IListenRoutingUpdates;
 import org.opendaylight.controller.sal.routing.IRouting;
 import org.opendaylight.controller.statisticsmanager.IStatisticsManager;
@@ -71,7 +73,9 @@ public class Activator extends ComponentActivatorAbstractBase {
                     IInventoryListener.class.getName(),
                     IfNewHostNotify.class.getName(),
                     IListenRoutingUpdates.class.getName(),
-                    IPathFinderService.class.getName() }, props);
+                    IPathFinderService.class.getName(),
+                    IListenDataPacket.class.getName()
+                    }, props);
 
             c.add(createContainerServiceDependency(containerName).setService(
                     IClusterContainerServices.class).setCallbacks(
@@ -102,6 +106,10 @@ public class Activator extends ComponentActivatorAbstractBase {
             c.add(createContainerServiceDependency(containerName).setService(
                     IRouting.class).setCallbacks("setRouting", "unsetRouting")
                     .setRequired(false));
+
+            c.add(createContainerServiceDependency(containerName).setService(
+                    IDataPacketService.class).setCallbacks("setDataPacketService",
+                   "unsetDataPacketService").setRequired(false));
 
         }
     }

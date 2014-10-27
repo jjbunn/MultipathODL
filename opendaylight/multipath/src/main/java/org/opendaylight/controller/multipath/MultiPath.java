@@ -1,5 +1,6 @@
 package org.opendaylight.controller.multipath;
 
+import java.net.InetAddress;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.EnumSet;
@@ -14,7 +15,6 @@ import java.util.Random;
 import java.util.Set;
 import java.util.Comparator;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -30,7 +30,6 @@ import org.opendaylight.controller.hosttracker.IfNewHostNotify;
 import org.opendaylight.controller.hosttracker.hostAware.HostNodeConnector;
 import org.opendaylight.controller.sal.action.Action;
 import org.opendaylight.controller.sal.action.Output;
-
 import org.opendaylight.controller.sal.action.SetDlDst;
 import org.opendaylight.controller.sal.core.Bandwidth;
 import org.opendaylight.controller.sal.core.ConstructionException;
@@ -43,12 +42,22 @@ import org.opendaylight.controller.sal.core.UpdateType;
 import org.opendaylight.controller.sal.flowprogrammer.Flow;
 import org.opendaylight.controller.sal.match.Match;
 import org.opendaylight.controller.sal.match.MatchType;
+import org.opendaylight.controller.sal.packet.IListenDataPacket;
+import org.opendaylight.controller.sal.packet.PacketResult;
+import org.opendaylight.controller.sal.packet.RawPacket;
+import org.opendaylight.controller.sal.packet.Ethernet;
+import org.opendaylight.controller.sal.packet.IDataPacketService;
+import org.opendaylight.controller.sal.packet.IPv4;
+import org.opendaylight.controller.sal.packet.Packet;
+import org.opendaylight.controller.sal.packet.TCP;
 import org.opendaylight.controller.sal.reader.FlowOnNode;
 import org.opendaylight.controller.sal.routing.IListenRoutingUpdates;
 import org.opendaylight.controller.sal.routing.IRouting;
 import org.opendaylight.controller.sal.utils.EtherTypes;
+import org.opendaylight.controller.sal.utils.IPProtocols;
 import org.opendaylight.controller.sal.utils.ServiceHelper;
 import org.opendaylight.controller.sal.utils.Status;
+import org.opendaylight.controller.sal.utils.NetUtils;
 import org.opendaylight.controller.statisticsmanager.IStatisticsManager;
 import org.opendaylight.controller.switchmanager.IInventoryListener;
 import org.opendaylight.controller.switchmanager.ISwitchManager;
@@ -99,9 +108,11 @@ import org.slf4j.LoggerFactory;
  *         Bunn.)
  */
 public class MultiPath implements IPathFinderService, IfNewHostNotify,
-        IListenRoutingUpdates, IInventoryListener, IPathCacheService {
+        IListenRoutingUpdates, IInventoryListener, IPathCacheService, IListenDataPacket {
     /** The maximum link weight. */
     public static final int MAX_LINK_WEIGHT = 10000;
+    /** The flow idle timeout */
+    public static final short FLOW_IDLE_TIMEOUT = 10;
     /** The maximum path weight. */
     public static final int MAX_PATH_WEIGHT = Integer.MAX_VALUE
             - MAX_LINK_WEIGHT - 1;
@@ -120,6 +131,7 @@ public class MultiPath implements IPathFinderService, IfNewHostNotify,
     private ISwitchManager switchManager;
     private IStatisticsManager statisticsManager;
     private IForwardingRulesManager forwardingRulesManager;
+    private IDataPacketService dataPacketService;
 
     private static ScheduledExecutorService dataRateCalculator;
 
@@ -134,8 +146,6 @@ public class MultiPath implements IPathFinderService, IfNewHostNotify,
     /** The current active path calculator. */
     protected IPathCalculator currentPathCalculator;
 
-    private ConcurrentMap<HostNodePair, HashMap<NodeConnector, FlowEntry>> rulesDB;
-    private Map<Node, List<FlowEntry>> tobePrunedPos = new HashMap<Node, List<FlowEntry>>();
 
     /** Stores all paths established in the topology: [EndPoints -> PathSet]. */
     protected ConcurrentHashMap<EndPoints, Set<ExtendedPath>> endPointsToExtendedPathMap;
@@ -170,16 +180,24 @@ public class MultiPath implements IPathFinderService, IfNewHostNotify,
     }
 
     /**
-     * Populates <tt>rulesDB</tt> with rules specifying how to reach
+     * Populates all switches in the topology with flows for
      * <tt>destination</tt> from <tt>source</tt>
      *
      * @param source
      *            The source.
+     * @param sourceTcpPort
+     *            The source TCP port if TCP/IP traffic, else -1
      * @param destination
      *            The destination.
+     * @param destinationTcpPort
+     *            The destination TCP port if TCP/IP traffic, else -1
+     * @param protocol
+     *            The protocol type, or -1 if not to be specified
+     * @param bIncludeReverse
+     *            Include flow entries for the reverse path, if true
      */
-    public List<FlowEntry> createFlowsForSelectedPath(HostNodeConnector source,
-            HostNodeConnector destination) {
+    public List<FlowEntry> createFlowsForSelectedPath(HostNodeConnector source, short sourceTcpPort,
+            HostNodeConnector destination, short destinationTcpPort, byte protocol, boolean bIncludeReverse) {
 
         if (source == null || destination == null) {
             log.error("Source or Destination host is null");
@@ -236,13 +254,25 @@ public class MultiPath implements IPathFinderService, IfNewHostNotify,
             match.setField(MatchType.DL_TYPE, EtherTypes.IPv4.shortValue());
             match.setField(MatchType.NW_DST, destination.getNetworkAddress());
 
+            if(protocol != -1) {
+                match.setField(MatchType.NW_PROTO, protocol);
+            }
+
+            if(destinationTcpPort != -1) {
+                match.setField(MatchType.TP_DST, destinationTcpPort);
+            }
+            if(sourceTcpPort != -1) {
+                match.setField(MatchType.TP_SRC, sourceTcpPort);
+            }
+
+
             actions.add(new Output(tailNodeConnector));
             //actions.add(new PopVlan());
 
             match.setField(MatchType.IN_PORT, lastNodeConnector);
 
             Flow flow = new Flow(match, actions);
-            flow.setIdleTimeout((short) 12345);
+            flow.setIdleTimeout(FLOW_IDLE_TIMEOUT);
             flow.setHardTimeout((short) 0);
             flow.setPriority(DEFAULT_IPSWITCH_PRIORITY);
 
@@ -252,30 +282,43 @@ public class MultiPath implements IPathFinderService, IfNewHostNotify,
 
             flows.add(fe);
 
-            // Now the reverse flow for the ACKs
+            if(bIncludeReverse) {
+                // Now the reverse flow for the ACKs
 
-            match = new Match();
-            actions = new ArrayList<Action>();
+                match = new Match();
+                actions = new ArrayList<Action>();
 
-            match.setField(MatchType.DL_TYPE, EtherTypes.IPv4.shortValue());
-            match.setField(MatchType.NW_DST, source.getNetworkAddress());
+                match.setField(MatchType.DL_TYPE, EtherTypes.IPv4.shortValue());
+                match.setField(MatchType.NW_DST, source.getNetworkAddress());
 
-            actions.add(new Output(lastNodeConnector));
-            //actions.add(new PopVlan());
+                if(protocol != -1) {
+                    match.setField(MatchType.NW_PROTO, protocol);
+                }
+
+                if(destinationTcpPort != -1) {
+                    match.setField(MatchType.TP_SRC, destinationTcpPort);
+                }
+                if(sourceTcpPort != -1) {
+                    match.setField(MatchType.TP_DST, sourceTcpPort);
+                }
+
+                actions.add(new Output(lastNodeConnector));
+                //actions.add(new PopVlan());
 
 
-            match.setField(MatchType.IN_PORT, tailNodeConnector);
+                match.setField(MatchType.IN_PORT, tailNodeConnector);
 
-            flow = new Flow(match, actions);
-            flow.setIdleTimeout((short) 12345);
-            flow.setHardTimeout((short) 0);
-            flow.setPriority(DEFAULT_IPSWITCH_PRIORITY);
+                flow = new Flow(match, actions);
+                flow.setIdleTimeout(FLOW_IDLE_TIMEOUT);
+                flow.setHardTimeout((short) 0);
+                flow.setPriority(DEFAULT_IPSWITCH_PRIORITY);
 
-            log.warn("Adding reverse flow at tail: " + flow.toString());
+                log.warn("Adding reverse flow at tail: " + flow.toString());
 
-            fe = new FlowEntry(policyName, flowName, flow, tailNode);
+                fe = new FlowEntry(policyName, flowName, flow, tailNode);
 
-            flows.add(fe);
+                flows.add(fe);
+            }
 
             // Now the head node connector if it's the destination node
 
@@ -287,6 +330,17 @@ public class MultiPath implements IPathFinderService, IfNewHostNotify,
                 match.setField(MatchType.DL_TYPE, EtherTypes.IPv4.shortValue());
                 match.setField(MatchType.NW_DST, destination.getNetworkAddress());
 
+                if(protocol != -1) {
+                    match.setField(MatchType.NW_PROTO, protocol);
+                }
+
+                if(destinationTcpPort != -1) {
+                    match.setField(MatchType.TP_DST, destinationTcpPort);
+                }
+                if(sourceTcpPort != -1) {
+                    match.setField(MatchType.TP_SRC, sourceTcpPort);
+                }
+
                 actions.add(new SetDlDst(destination.getDataLayerAddressBytes()));
                 actions.add(new Output(destinationNodeConnector));
                 //actions.add(new PopVlan());
@@ -295,7 +349,7 @@ public class MultiPath implements IPathFinderService, IfNewHostNotify,
                 match.setField(MatchType.IN_PORT, headNodeConnector);
 
                 flow = new Flow(match, actions);
-                flow.setIdleTimeout((short) 12345);
+                flow.setIdleTimeout(FLOW_IDLE_TIMEOUT);
                 flow.setHardTimeout((short) 0);
                 flow.setPriority(DEFAULT_IPSWITCH_PRIORITY);
 
@@ -305,30 +359,42 @@ public class MultiPath implements IPathFinderService, IfNewHostNotify,
 
                 flows.add(fe);
 
-                // reverse flow for ACKs
+                if(bIncludeReverse) {
+                    // reverse flow for ACKs
 
-                match = new Match();
-                actions = new ArrayList<Action>();
+                    match = new Match();
+                    actions = new ArrayList<Action>();
 
-                match.setField(MatchType.DL_TYPE, EtherTypes.IPv4.shortValue());
-                match.setField(MatchType.NW_DST, source.getNetworkAddress());
+                    match.setField(MatchType.DL_TYPE, EtherTypes.IPv4.shortValue());
+                    match.setField(MatchType.NW_DST, source.getNetworkAddress());
 
-                actions.add(new Output(headNodeConnector));
-                //actions.add(new PopVlan());
+                    if(protocol != -1) {
+                        match.setField(MatchType.NW_PROTO, protocol);
+                    }
 
+                    if(destinationTcpPort != -1) {
+                        match.setField(MatchType.TP_SRC, destinationTcpPort);
+                    }
+                    if(sourceTcpPort != -1) {
+                        match.setField(MatchType.TP_DST, sourceTcpPort);
+                    }
 
-                match.setField(MatchType.IN_PORT, destinationNodeConnector);
+                    actions.add(new Output(headNodeConnector));
+                    //actions.add(new PopVlan());
 
-                flow = new Flow(match, actions);
-                flow.setIdleTimeout((short) 12345);
-                flow.setHardTimeout((short) 0);
-                flow.setPriority(DEFAULT_IPSWITCH_PRIORITY);
+                    match.setField(MatchType.IN_PORT, destinationNodeConnector);
 
-                log.warn("Adding reverse flow at destination: " + flow.toString());
+                    flow = new Flow(match, actions);
+                    flow.setIdleTimeout(FLOW_IDLE_TIMEOUT);
+                    flow.setHardTimeout((short) 0);
+                    flow.setPriority(DEFAULT_IPSWITCH_PRIORITY);
 
-                fe = new FlowEntry(policyName, flowName, flow, headNode);
+                    log.warn("Adding reverse flow at destination: " + flow.toString());
 
-                flows.add(fe);
+                    fe = new FlowEntry(policyName, flowName, flow, headNode);
+
+                    flows.add(fe);
+                }
             }
 
             lastNodeConnector = headNodeConnector;
@@ -345,14 +411,93 @@ public class MultiPath implements IPathFinderService, IfNewHostNotify,
 
         // Now add the flows using the rules manager
 
+        List<FlowEntry> installedFlowEntrys = new ArrayList<FlowEntry>();
+
         for(FlowEntry fe: flows) {
                 if(!forwardingRulesManager.installFlowEntry(fe).isSuccess()) {
                     log.warn("Error installing Flow Entry : "+fe.toString());
+                } else {
+                    installedFlowEntrys.add(fe);
                 }
         }
 
-        return flows;
+        log.info("Installed {} FlowEntrys", installedFlowEntrys.size());
+
+        return installedFlowEntrys;
     }
+
+    @Override
+    public PacketResult receiveDataPacket(RawPacket inPkt) {
+        if (inPkt == null) {
+            return PacketResult.IGNORED;
+        }
+        log.debug("Received a frame of size: {}", inPkt.getPacketData().length);
+        Packet formattedPak = this.dataPacketService.decodeDataPacket(inPkt);
+
+        if (formattedPak instanceof Ethernet) {
+            Object nextPak = formattedPak.getPayload();
+            if (nextPak instanceof IPv4) {
+                log.info("Handling punted IPv4 packet: {}", nextPak);
+                byte prot = ((IPv4)nextPak).getProtocol();
+                if(prot == IPProtocols.TCP.byteValue()) {
+                    TCP tcpPacket = (TCP) ((IPv4) nextPak).getPayload();
+                    log.info("Will install flows for TCP packet {}", tcpPacket.toString());
+                    handlePuntedTcpPacket((IPv4) nextPak, tcpPacket, inPkt.getIncomingNodeConnector(), true);
+                }
+            }
+        }
+        return PacketResult.IGNORED;
+
+    }
+
+    private void handlePuntedTcpPacket(IPv4 pkt, TCP tcpPacket, NodeConnector incomingNodeConnector, boolean allowAddPending) {
+        InetAddress dIP = NetUtils.getInetAddress(pkt.getDestinationAddress());
+        if (dIP == null || hostTracker == null) {
+            log.debug("Invalid param(s) in handlePuntedIPPacket.. DestIP: {}. hostTracker: {}", dIP, hostTracker);
+            return;
+        }
+        HostNodeConnector destHost = this.hostTracker.hostFind(dIP);
+
+        Set<HostNodeConnector> allHosts = this.hostTracker.getAllHosts();
+
+        HostNodeConnector sourceHost = null;
+        for(HostNodeConnector hnc: allHosts) {
+            if(hnc.getnodeConnector().equals(incomingNodeConnector)) {
+                sourceHost = hnc;
+                break;
+            }
+        }
+
+        if(sourceHost == null) {
+            log.warn("Cannot find the host node connector for incoming {}", incomingNodeConnector);
+            log.warn("Dropping punted IP packet received at {} to Host {}", incomingNodeConnector, dIP);
+            return;
+        }
+
+        List<FlowEntry> createdFlowEntrys = null;
+
+        // This is a TCP/IP packet - extract the TCP source and destination ports
+
+        short sourcePort = tcpPacket.getSourcePort();
+
+        sourcePort = (short) -1;
+
+        short destinationPort = tcpPacket.getDestinationPort();
+
+        //destinationPort = (short) -1;
+
+        log.info("Punted TCP/IP Packet from Source {} port {}, to Destination {} port {}", sourceHost, sourcePort, destHost, destinationPort);
+
+        createdFlowEntrys = createFlowsForSelectedPath(sourceHost, sourcePort, destHost, destinationPort, IPProtocols.TCP.byteValue(), false);
+
+        log.info("FlowEntrys created:");
+        for(FlowEntry fe: createdFlowEntrys) {
+            log.info(fe.toString());
+        }
+
+    }
+
+
 
     /**
      * Function called by the dependency manager when all the required
@@ -389,7 +534,7 @@ public class MultiPath implements IPathFinderService, IfNewHostNotify,
 
     void init() {
 
-        log.info("MultiPath Starting up");
+        log.info("MultiPath is starting up");
 
         // Start up the link utilization calculator
         dataRateCalculator = Executors
@@ -450,6 +595,8 @@ public class MultiPath implements IPathFinderService, IfNewHostNotify,
         dataRateCalculator.shutdown();
     }
 
+
+
     private void allocateCaches() {
         if (this.clusterContainerService == null) {
             log.trace("un-initialized clusterContainerService, can't create cache");
@@ -472,12 +619,6 @@ public class MultiPath implements IPathFinderService, IfNewHostNotify,
             log.trace("un-initialized clusterContainerService, can't retrieve cache");
             return;
         }
-        rulesDB = (ConcurrentMap<HostNodePair, HashMap<NodeConnector, FlowEntry>>) clusterContainerService
-                .getCache(MULTIPATH_RULES_CACHE_NAME);
-        if (rulesDB == null) {
-            log.error("\nFailed to get rulesDB handle");
-        }
-
     }
 
     private void destroyCaches() {
@@ -492,40 +633,18 @@ public class MultiPath implements IPathFinderService, IfNewHostNotify,
     @Override
     public void recalculateDone() {
         if (this.hostTracker == null) {
-            // Not yet ready to process all the updates
-            // TODO: we should make sure that this call is executed eventually
             return;
         }
         Set<HostNodeConnector> allHosts = this.hostTracker.getAllHosts();
-        log.info("recalculateDone {} hosts", allHosts.size());
-        /*
-         * for (HostNodeConnector host : allHosts) { Set<Node> switches =
-         * preparePerHostRules(host); if (switches != null) { // This will
-         * refresh existing rules, by overwriting // the previous ones
-         * installPerHostRules(host, switches); pruneExcessRules(switches); } }
-         */
+
+        String allHostIPs = "";
+        for(HostNodeConnector hnc: allHosts) {
+            allHostIPs += hnc.getNetworkAddressAsString() + " ";
+        }
+        log.info("recalculateDone: there are {} hosts: {}", allHosts.size(), allHostIPs);
+
     }
 
-    private void pruneExcessRules(Set<Node> switches) {
-        for (Node swId : switches) {
-            List<FlowEntry> pl = tobePrunedPos.get(swId);
-            if (pl != null) {
-                log.debug(
-                        "Policies for Switch: {} in the list to be deleted: {}",
-                        swId, pl);
-                Iterator<FlowEntry> plIter = pl.iterator();
-                // for (Policy po: pl) {
-                while (plIter.hasNext()) {
-                    FlowEntry po = plIter.next();
-                    log.error("Removing Policy, Switch: {} Policy: {}", swId,
-                            po);
-                    this.forwardingRulesManager.uninstallFlowEntry(po);
-                    plIter.remove();
-                }
-            }
-            // tobePrunedPos.remove(swId);
-        }
-    }
 
     /**
      * A Host facing port has come up in a container.
@@ -543,7 +662,11 @@ public class MultiPath implements IPathFinderService, IfNewHostNotify,
         log.info("Host Facing Port {} in Node {} came up!",
                 swPort.getNodeConnectorIdAsString(), node.getNodeIDString());
         Set<HostNodeConnector> allHosts = this.hostTracker.getAllHosts();
-        log.info("There are {} hosts", allHosts.size());
+        String allHostIPs = "";
+        for(HostNodeConnector hnc: allHosts) {
+            allHostIPs += hnc.getNetworkAddressAsString() + " ";
+        }
+        log.info("There are {} hosts: {}", allHosts.size(), allHostIPs);
 
     }
 
@@ -667,7 +790,8 @@ public class MultiPath implements IPathFinderService, IfNewHostNotify,
      *
      */
     void stop() {
-
+       log.info("Multipath is stopping");
+       shutDown();
     }
 
     /**
@@ -1840,8 +1964,6 @@ public class MultiPath implements IPathFinderService, IfNewHostNotify,
                 // dstIp = IPv4.toIPv4Address(argElements[1]);
                 dstPort = Short.valueOf(argElements[2]);
 
-                // @TODO
-                // this.installDefaultPaths(dstSwitchId, dstIp, dstPort);
                 break;
             default:
                 // No argument given.
@@ -1972,92 +2094,8 @@ public class MultiPath implements IPathFinderService, IfNewHostNotify,
             return (int) ((finishingTime > 0) ? finishingTime : 0);
         }
 
-        /**
-         *
-         * @param dstNode
-         * @param dstIp
-         * @param dstPort
-         */
-        private void installDefaultPaths(Node dstNode, int dstIp, short dstPort) {
-            /*
-             * @TODO
-             *
-             * for (long srcNode : this.floodlightProvider.getAllSwitchDpids())
-             * { if (srcNode == dstNode) continue;
-             *
-             * Set<Path> paths = this.pathFinder.getPaths(srcNode, dstNode); if
-             * (paths.isEmpty()) continue;
-             *
-             * // Add the first path to the defaults path set. Path defaultPath
-             * = (Path) paths.toArray()[0];
-             * this.defaultRouteIDs.add(defaultPath.getId());
-             *
-             * int wildcards = OFMatch.OFPFW_ALL & ~OFMatch.OFPFW_DL_TYPE &
-             * ~OFMatch.OFPFW_NW_DST_MASK;
-             *
-             * // The now OF match. OFMatch match = new OFMatch();
-             * match.setWildcards(wildcards);
-             * match.setDataLayerType(Ethernet.TYPE_IPv4);
-             * match.setNetworkDestination(dstIp);
-             *
-             * /// /// TESTING ///
-             *
-             * // Install the last hop. IOFSwitch iofSwitch =
-             * floodlightProvider.
-             * getSwitch(defaultPath.getEndPoints().getDst());
-             * this.addFlowMod(iofSwitch, match, dstPort);
-             *
-             * // Install the path. List<Link> links = defaultPath.getLinks();
-             * boolean moveOn = true; long switchId; int outPort; // Install
-             * links in reverse order, i.e. begin at the last (destination)
-             * switch. ListIterator<Link> iter =
-             * links.listIterator(links.size()); // Get the last link. Link link
-             * = iter.previous();
-             *
-             * do { // Get the current switchId in the path. switchId =
-             * link.getSrc(); outPort = link.getSrcPort(); // Strip the physical
-             * output port id. short phyOutPortId =
-             * OFSwitchPort.physicalPortIdOf(outPort); //Get the current switch
-             * in the path. iofSwitch = floodlightProvider.getSwitch(switchId);
-             *
-             * if (iter.hasPrevious()) { // Get the next link. link =
-             * iter.previous(); } else { outPort = link.getSrcPort(); moveOn =
-             * false; }
-             *
-             * this.addFlowMod(iofSwitch, match, phyOutPortId);
-             *
-             * } while (moveOn); }
-             */
-        }
 
-        /**
-         *
-         * @param iofSwitch
-         * @param match
-         * @param phyOutPortId
-         */
 
-        /*
-         * @TODO private void addFlowMod(IOFSwitch iofSwitch, OFMatch match,
-         * short phyOutPortId) { // Add the flow OFFlowMod flowMod = (OFFlowMod)
-         * floodlightProvider.getOFMessageFactory().getMessage(OFType.FLOW_MOD);
-         * // Set idle timeout. flowMod.setIdleTimeout((short) 0); // The cookie
-         * flowMod.setCookie(5); // Buffered packet to apply to (or -1). Not
-         * meaningful for OFPFC_DELETE.
-         * flowMod.setBufferId(OFPacketOut.BUFFER_ID_NONE); // Fields to match.
-         * flowMod.setMatch(match); // priority flowMod.setPriority((short) 0);
-         *
-         * // Actions short actionsLength = 0; List<OFAction> actions = new
-         * ArrayList<OFAction>(); // Set the output action. actions.add(new
-         * OFActionOutput(phyOutPortId, (short) 0xffff)); actionsLength +=
-         * OFActionOutput.MINIMUM_LENGTH; flowMod.setActions(actions); // Length
-         * flowMod.setLength((short) (OFFlowMod.MINIMUM_LENGTH +
-         * actionsLength));
-         *
-         * try { iofSwitch.write(flowMod, null); iofSwitch.flush(); } catch
-         * (IOException e) { // TODO Auto-generated catch block
-         * e.printStackTrace(); } }
-         */
     }
 
     /**
@@ -2968,6 +3006,17 @@ public class MultiPath implements IPathFinderService, IfNewHostNotify,
     public void unsetStatisticsManager(IStatisticsManager statisticsManager) {
         if (this.statisticsManager == statisticsManager) {
             this.statisticsManager = null;
+        }
+    }
+
+    public void setDataPacketService(IDataPacketService s) {
+        log.info("Setting dataPacketService");
+        this.dataPacketService = s;
+    }
+
+    public void unsetDataPacketService(IDataPacketService s) {
+        if (this.dataPacketService == s) {
+            this.dataPacketService = null;
         }
     }
 

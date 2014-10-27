@@ -140,13 +140,21 @@ public interface IPathFinderService {
 
     /**
     *
-    * Create flow entries in switches to support the current selected path between two hosts
+    * Create flow entries in switches to support the current selected path between two hosts, with
+    * TCP source and destination ports for TCP/IP flows (set to -1 otherwise). If bIncludeReverse is
+    * true then the reverse flows are created. The protocol byte is used to define the protocol for
+    * the flows, if not set to -1.
     * @param source
+    * @param sourcePort
     * @param destination
+    * @param destinationPort
+    * @param protocol
+    * @param bIncludeReverse
     * @return <b>List<FlowEntry></b> The flows installed for the path
     */
 
-    public List<FlowEntry> createFlowsForSelectedPath(HostNodeConnector source, HostNodeConnector destination);
+    public List<FlowEntry> createFlowsForSelectedPath(HostNodeConnector source, short sourcePort,
+            HostNodeConnector destination, short destinationPort, byte protocol, boolean bIncludeReverse);
 
     /**
     *

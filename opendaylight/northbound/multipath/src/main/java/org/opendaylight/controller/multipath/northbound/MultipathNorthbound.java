@@ -316,6 +316,131 @@ public class MultipathNorthbound {
 
    /**
    *
+   * Retrieves all possible paths between two Nodes
+   *
+   * @param containerName
+   *            Name of the Container (Eg. 'default')
+   * @param node1
+   *            The name of the source node/switch
+   * @param node2
+   *            The name of the destination node/switch
+   * @return The set of paths
+   *
+   *         Example:
+   *
+   *         Request URL:
+   *         http://localhost:8080/controller/nb/v2/multipath/default/allpaths/node1/node2
+   *
+   */
+  @Path("/{containerName}/allpaths/{node1}/{node2}")
+  @GET
+  @Produces({ MediaType.APPLICATION_JSON, MediaType.APPLICATION_XML })
+  // @TypeHint(Nodes.class)
+  @StatusCodes({
+          @ResponseCode(code = 200, condition = "Operation successful"),
+          @ResponseCode(code = 401, condition = "User not authorized to perform this operation"),
+          @ResponseCode(code = 404, condition = "The containerName is not found"),
+          @ResponseCode(code = 503, condition = "One or more of Controller Services are unavailable"),
+          @ResponseCode(code = 400, condition = "Incorrect query syntax") })
+  public Response getAllPaths(
+          @PathParam("containerName") String containerName,
+          @PathParam("node1") String node1, @PathParam("node2") String node2) {
+
+      if (!isValidContainer(containerName)) {
+          throw new ResourceNotFoundException("Container " + containerName
+                  + " does not exist.");
+      }
+
+      if (!NorthboundUtils.isAuthorized(getUserName(), containerName,
+              Privilege.READ, this)) {
+          throw new UnauthorizedException(
+                  "User is not authorized to perform this operation on container "
+                          + containerName);
+      }
+
+      IPathFinderService multipath = getMultipathService(containerName);
+      if (multipath == null) {
+          throw new ServiceUnavailableException("Multipath "
+                  + RestMessages.SERVICEUNAVAILABLE.toString());
+      }
+
+      // Check that the nodes exist in the topology
+      ITopologyManager topologyManager = (ITopologyManager) ServiceHelper
+              .getGlobalInstance(ITopologyManager.class, this);
+
+      if(topologyManager == null) {
+          throw new ServiceUnavailableException("TopologyManager "
+              + RestMessages.SERVICEUNAVAILABLE.toString());
+      }
+
+      // Get all nodes/switches
+      Map<Node, Set<Edge>> nodeMapTopology = topologyManager
+              .getNodeEdges();
+
+      Set<Node> allNodes = nodeMapTopology.keySet();
+
+      // Get all hosts
+      IfIptoHost hostTracker = (IfIptoHost) ServiceHelper
+              .getGlobalInstance(IfIptoHost.class, this);
+
+      if(hostTracker == null) {
+          throw new ServiceUnavailableException("HostTracker "
+              + RestMessages.SERVICEUNAVAILABLE.toString());
+      }
+      Set<HostNodeConnector> allHosts = hostTracker.getAllHosts();
+
+      Node n1 = myStringNode(node1, allNodes);
+
+      if(n1 == null) {
+          // Not a node ... perhaps a host?
+          n1 = myStringHost(node1, allHosts);
+          if(n1 == null) {
+              throw new BadRequestException("Node "+node1+" does not exist in the topology");
+          }
+      }
+
+      Node n2 = myStringNode(node2, allNodes);
+
+      if(n2 == null) {
+          // Not a node ... perhaps a host?
+          n2 = myStringHost(node2, allHosts);
+          if(n2 == null) {
+              throw new BadRequestException("Node "+node1+" does not exist in the topology");
+          }
+      }
+
+      Set<ExtendedPath> allPaths = multipath.getPaths(n1, n2);
+
+      if(allPaths == null) {
+          throw new BadRequestException("There are no paths between Node "+node1+" and "+node2);
+      }
+
+      JsonArray pathsJson = new JsonArray();
+
+      for(ExtendedPath path: allPaths) {
+          JsonObject pathJson = new JsonObject();
+          JsonArray edgesJson = new JsonArray();
+          List<Edge> edges = path.getEdges();
+          for(Edge edge: edges) {
+              edgesJson.add(new JsonPrimitive(edge.toString()));
+          }
+          pathJson.addProperty("Hops", edges.size());
+          pathJson.add("Links",edgesJson);
+
+          pathsJson.add(pathJson);
+      }
+
+      Gson gson = new Gson();
+      return Response.ok(gson.toJson(pathsJson), MediaType.APPLICATION_JSON)
+              .build();
+
+  }
+
+
+
+
+   /**
+   *
    * Installs Flow entries for the current selected path between source and destination hosts
    *
    * @param containerName
@@ -395,7 +520,7 @@ public class MultipathNorthbound {
          throw new BadRequestException("Host "+destination+" does not exist in the topology");
       }
 
-      List<FlowEntry> flows = multipath.createFlowsForSelectedPath(n1, n2);
+      List<FlowEntry> flows = multipath.createFlowsForSelectedPath(n1, (short) -1, n2, (short) -1, (byte) -1,  true);
 
       JsonObject flowJson = new JsonObject();
       JsonArray flowEntriesJson = new JsonArray();
