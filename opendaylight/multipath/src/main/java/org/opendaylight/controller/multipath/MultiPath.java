@@ -42,6 +42,7 @@ import org.opendaylight.controller.sal.core.UpdateType;
 import org.opendaylight.controller.sal.flowprogrammer.Flow;
 import org.opendaylight.controller.sal.match.Match;
 import org.opendaylight.controller.sal.match.MatchType;
+import org.opendaylight.controller.sal.packet.ICMP;
 import org.opendaylight.controller.sal.packet.IListenDataPacket;
 import org.opendaylight.controller.sal.packet.PacketResult;
 import org.opendaylight.controller.sal.packet.RawPacket;
@@ -218,6 +219,8 @@ public class MultiPath implements IPathFinderService, IfNewHostNotify,
         if (sourceNodeConnector == null || destinationNodeConnector == null) {
             log.error("Source or Destination's nodeconnector is null");
             return null;
+        } else {
+            log.info("Source node connector {}, destination {}", sourceNodeConnector, destinationNodeConnector);
         }
 
         List<FlowEntry> flows = new ArrayList<FlowEntry>();
@@ -232,21 +235,11 @@ public class MultiPath implements IPathFinderService, IfNewHostNotify,
         log.warn("Flow creation for " + flowName + " Switches "
                 + sourceNode.toString() + " to " + destinationNode.toString());
 
-        NodeConnector lastNodeConnector = sourceNodeConnector;
+        // do something different if the hosts are both on the same switch
 
-        for (Edge link : res.getEdges()) {
+        if(sourceNode.equals(destinationNode)) {
 
-            log.warn("Working on link: " + link.toString());
-
-            // First the tail connector (i.e. the "from" end)
-
-            NodeConnector tailNodeConnector = link.getTailNodeConnector();
-
-            Node tailNode = tailNodeConnector.getNode();
-
-            NodeConnector headNodeConnector = link.getHeadNodeConnector();
-
-            Node headNode = headNodeConnector.getNode();
+            log.warn("Source and Destination are the same switch");
 
             Match match = new Match();
             List<Action> actions = new ArrayList<Action>();
@@ -265,67 +258,45 @@ public class MultiPath implements IPathFinderService, IfNewHostNotify,
                 match.setField(MatchType.TP_SRC, sourceTcpPort);
             }
 
-
-            actions.add(new Output(tailNodeConnector));
+            actions.add(new Output(destinationNodeConnector));
             //actions.add(new PopVlan());
 
-            match.setField(MatchType.IN_PORT, lastNodeConnector);
+            match.setField(MatchType.IN_PORT, sourceNodeConnector);
 
             Flow flow = new Flow(match, actions);
             flow.setIdleTimeout(FLOW_IDLE_TIMEOUT);
             flow.setHardTimeout((short) 0);
             flow.setPriority(DEFAULT_IPSWITCH_PRIORITY);
 
-            log.warn("Adding flow at tail: " + flow.toString());
+            log.warn("Adding flow in the switch: " + flow.toString());
 
-            FlowEntry fe = new FlowEntry(policyName, flowName, flow, tailNode);
+            FlowEntry fe = new FlowEntry(policyName, flowName, flow, sourceNode);
 
             flows.add(fe);
 
-            if(bIncludeReverse) {
-                // Now the reverse flow for the ACKs
 
-                match = new Match();
-                actions = new ArrayList<Action>();
+        } else {
 
-                match.setField(MatchType.DL_TYPE, EtherTypes.IPv4.shortValue());
-                match.setField(MatchType.NW_DST, source.getNetworkAddress());
+            NodeConnector lastNodeConnector = sourceNodeConnector;
 
-                if(protocol != -1) {
-                    match.setField(MatchType.NW_PROTO, protocol);
-                }
+            log.info("Specifying flows along the path, which has {} hops", res.getEdges().size());
 
-                if(destinationTcpPort != -1) {
-                    match.setField(MatchType.TP_SRC, destinationTcpPort);
-                }
-                if(sourceTcpPort != -1) {
-                    match.setField(MatchType.TP_DST, sourceTcpPort);
-                }
+            for (Edge link : res.getEdges()) {
 
-                actions.add(new Output(lastNodeConnector));
-                //actions.add(new PopVlan());
+                log.warn("Working on link: " + link.toString());
 
+                // First the tail connector (i.e. the "from" end)
 
-                match.setField(MatchType.IN_PORT, tailNodeConnector);
+                NodeConnector tailNodeConnector = link.getTailNodeConnector();
 
-                flow = new Flow(match, actions);
-                flow.setIdleTimeout(FLOW_IDLE_TIMEOUT);
-                flow.setHardTimeout((short) 0);
-                flow.setPriority(DEFAULT_IPSWITCH_PRIORITY);
+                Node tailNode = tailNodeConnector.getNode();
 
-                log.warn("Adding reverse flow at tail: " + flow.toString());
+                NodeConnector headNodeConnector = link.getHeadNodeConnector();
 
-                fe = new FlowEntry(policyName, flowName, flow, tailNode);
+                Node headNode = headNodeConnector.getNode();
 
-                flows.add(fe);
-            }
-
-            // Now the head node connector if it's the destination node
-
-            if (headNode.equals(destinationNode)) {
-
-                match = new Match();
-                actions = new ArrayList<Action>();
+                Match match = new Match();
+                List<Action> actions = new ArrayList<Action>();
 
                 match.setField(MatchType.DL_TYPE, EtherTypes.IPv4.shortValue());
                 match.setField(MatchType.NW_DST, destination.getNetworkAddress());
@@ -341,26 +312,25 @@ public class MultiPath implements IPathFinderService, IfNewHostNotify,
                     match.setField(MatchType.TP_SRC, sourceTcpPort);
                 }
 
-                actions.add(new SetDlDst(destination.getDataLayerAddressBytes()));
-                actions.add(new Output(destinationNodeConnector));
+
+                actions.add(new Output(tailNodeConnector));
                 //actions.add(new PopVlan());
 
+                match.setField(MatchType.IN_PORT, lastNodeConnector);
 
-                match.setField(MatchType.IN_PORT, headNodeConnector);
-
-                flow = new Flow(match, actions);
+                Flow flow = new Flow(match, actions);
                 flow.setIdleTimeout(FLOW_IDLE_TIMEOUT);
                 flow.setHardTimeout((short) 0);
                 flow.setPriority(DEFAULT_IPSWITCH_PRIORITY);
 
-                log.warn("Adding flow at destination: " + flow.toString());
+                log.warn("Specify flow at tail: " + flow.toString());
 
-                fe = new FlowEntry(policyName, flowName, flow, headNode);
+                FlowEntry fe = new FlowEntry(policyName, flowName, flow, tailNode);
 
                 flows.add(fe);
 
                 if(bIncludeReverse) {
-                    // reverse flow for ACKs
+                    // Now the reverse flow for the ACKs
 
                     match = new Match();
                     actions = new ArrayList<Action>();
@@ -379,34 +349,115 @@ public class MultiPath implements IPathFinderService, IfNewHostNotify,
                         match.setField(MatchType.TP_DST, sourceTcpPort);
                     }
 
-                    actions.add(new Output(headNodeConnector));
+                    actions.add(new Output(lastNodeConnector));
                     //actions.add(new PopVlan());
 
-                    match.setField(MatchType.IN_PORT, destinationNodeConnector);
+
+                    match.setField(MatchType.IN_PORT, tailNodeConnector);
 
                     flow = new Flow(match, actions);
                     flow.setIdleTimeout(FLOW_IDLE_TIMEOUT);
                     flow.setHardTimeout((short) 0);
                     flow.setPriority(DEFAULT_IPSWITCH_PRIORITY);
 
-                    log.warn("Adding reverse flow at destination: " + flow.toString());
+                    log.warn("Specify reverse flow at tail: " + flow.toString());
+
+                    fe = new FlowEntry(policyName, flowName, flow, tailNode);
+
+                    flows.add(fe);
+                }
+
+                // Now the head node connector if it's the destination node
+
+                if (headNode.equals(destinationNode)) {
+
+                    match = new Match();
+                    actions = new ArrayList<Action>();
+
+                    match.setField(MatchType.DL_TYPE, EtherTypes.IPv4.shortValue());
+                    match.setField(MatchType.NW_DST, destination.getNetworkAddress());
+
+                    if(protocol != -1) {
+                        match.setField(MatchType.NW_PROTO, protocol);
+                    }
+
+                    if(destinationTcpPort != -1) {
+                        match.setField(MatchType.TP_DST, destinationTcpPort);
+                    }
+                    if(sourceTcpPort != -1) {
+                        match.setField(MatchType.TP_SRC, sourceTcpPort);
+                    }
+
+                    actions.add(new SetDlDst(destination.getDataLayerAddressBytes()));
+                    actions.add(new Output(destinationNodeConnector));
+                    //actions.add(new PopVlan());
+
+
+                    match.setField(MatchType.IN_PORT, headNodeConnector);
+
+                    flow = new Flow(match, actions);
+                    flow.setIdleTimeout(FLOW_IDLE_TIMEOUT);
+                    flow.setHardTimeout((short) 0);
+                    flow.setPriority(DEFAULT_IPSWITCH_PRIORITY);
+
+                    log.warn("Specify flow at destination: " + flow.toString());
 
                     fe = new FlowEntry(policyName, flowName, flow, headNode);
 
                     flows.add(fe);
+
+                    if(bIncludeReverse) {
+                        // reverse flow for ACKs
+
+                        match = new Match();
+                        actions = new ArrayList<Action>();
+
+                        match.setField(MatchType.DL_TYPE, EtherTypes.IPv4.shortValue());
+                        match.setField(MatchType.NW_DST, source.getNetworkAddress());
+
+                        if(protocol != -1) {
+                            match.setField(MatchType.NW_PROTO, protocol);
+                        }
+
+                        if(destinationTcpPort != -1) {
+                            match.setField(MatchType.TP_SRC, destinationTcpPort);
+                        }
+                        if(sourceTcpPort != -1) {
+                            match.setField(MatchType.TP_DST, sourceTcpPort);
+                        }
+
+                        actions.add(new Output(headNodeConnector));
+                        //actions.add(new PopVlan());
+
+                        match.setField(MatchType.IN_PORT, destinationNodeConnector);
+
+                        flow = new Flow(match, actions);
+                        flow.setIdleTimeout(FLOW_IDLE_TIMEOUT);
+                        flow.setHardTimeout((short) 0);
+                        flow.setPriority(DEFAULT_IPSWITCH_PRIORITY);
+
+                        log.warn("Specify reverse flow at destination: " + flow.toString());
+
+                        fe = new FlowEntry(policyName, flowName, flow, headNode);
+
+                        flows.add(fe);
+                    }
                 }
+
+                lastNodeConnector = headNodeConnector;
+
             }
-
-            lastNodeConnector = headNodeConnector;
-
         }
 
         // Get existing Flow Entrys for this group, and remove them
 
         List<FlowEntry> existing = forwardingRulesManager.getFlowEntriesForGroup(policyName);
-        log.warn("Uninstalling existing "+existing.size()+" Flow Entrys for "+policyName);
-        for(FlowEntry fe: existing) {
-            forwardingRulesManager.uninstallFlowEntry(fe);
+
+        if(existing.size() > 0) {
+            log.warn("Uninstalling existing "+existing.size()+" Flow Entrys for "+policyName);
+            for(FlowEntry fe: existing) {
+                forwardingRulesManager.uninstallFlowEntry(fe);
+            }
         }
 
         // Now add the flows using the rules manager
@@ -414,14 +465,28 @@ public class MultiPath implements IPathFinderService, IfNewHostNotify,
         List<FlowEntry> installedFlowEntrys = new ArrayList<FlowEntry>();
 
         for(FlowEntry fe: flows) {
-                if(!forwardingRulesManager.installFlowEntry(fe).isSuccess()) {
-                    log.warn("Error installing Flow Entry : "+fe.toString());
-                } else {
-                    installedFlowEntrys.add(fe);
-                }
+            log.info("Attempt install of FlowEntry {}", fe.toString());
+            // Remove any matching FlowEntry
+            forwardingRulesManager.uninstallFlowEntry(fe);
+            if(!forwardingRulesManager.installFlowEntry(fe).isSuccess()) {
+                log.warn("Error installing the FlowEntry");
+            } else {
+                log.info("FlowEntry was installed");
+                installedFlowEntrys.add(fe);
+            }
         }
 
         log.info("Installed {} FlowEntrys", installedFlowEntrys.size());
+
+        // If any flow installations failed, remove those that succeeded
+
+        if(installedFlowEntrys.size() != flows.size()) {
+            log.warn("Some flow installations failed: removing the {} successful flows, as incomplete", installedFlowEntrys.size());
+            for(FlowEntry fe: installedFlowEntrys) {
+                forwardingRulesManager.uninstallFlowEntry(fe);
+            }
+
+        }
 
         return installedFlowEntrys;
     }
@@ -431,50 +496,78 @@ public class MultiPath implements IPathFinderService, IfNewHostNotify,
         if (inPkt == null) {
             return PacketResult.IGNORED;
         }
-        log.debug("Received a frame of size: {}", inPkt.getPacketData().length);
+        //log.warn("Received a frame of size: {}", inPkt.getPacketData().length);
         Packet formattedPak = this.dataPacketService.decodeDataPacket(inPkt);
 
         if (formattedPak instanceof Ethernet) {
+            Ethernet etherPacket = (Ethernet) formattedPak;
             Object nextPak = formattedPak.getPayload();
             if (nextPak instanceof IPv4) {
                 log.info("Handling punted IPv4 packet: {}", nextPak);
                 byte prot = ((IPv4)nextPak).getProtocol();
                 if(prot == IPProtocols.TCP.byteValue()) {
                     TCP tcpPacket = (TCP) ((IPv4) nextPak).getPayload();
-                    log.info("Will install flows for TCP packet {}", tcpPacket.toString());
-                    handlePuntedTcpPacket((IPv4) nextPak, tcpPacket, inPkt.getIncomingNodeConnector(), true);
+                    log.info("Need flows for TCP packet {}", tcpPacket.toString());
+                    return handlePuntedTcpPacket((IPv4) nextPak, tcpPacket, inPkt.getIncomingNodeConnector(), false);
+                } else if(prot == IPProtocols.ICMP.byteValue()) {
+                    ICMP icmpPacket = (ICMP) ((IPv4) nextPak).getPayload();
+                    log.info("Need flows for ICMP packet {}", icmpPacket.toString());
+                    short sequenceNumber = icmpPacket.getSequenceNumber();
+                    if(sequenceNumber > 1) return PacketResult.IGNORED;
+                    return handlePuntedIcmpPacket((IPv4) nextPak, icmpPacket, inPkt.getIncomingNodeConnector(), true);
                 }
+            } else {
+                //log.info("Ethernet punted packet class {}", Ethernet.etherTypeClassMap.get(etherPacket.getEtherType()));
             }
+        } else {
+            log.info("Other punted packet {}", formattedPak.toString() );
         }
         return PacketResult.IGNORED;
 
     }
 
-    private void handlePuntedTcpPacket(IPv4 pkt, TCP tcpPacket, NodeConnector incomingNodeConnector, boolean allowAddPending) {
+    private PacketResult handlePuntedIcmpPacket(IPv4 pkt, ICMP icmpPacket, NodeConnector incomingNodeConnector, boolean bAddReverse) {
         InetAddress dIP = NetUtils.getInetAddress(pkt.getDestinationAddress());
-        if (dIP == null || hostTracker == null) {
-            log.debug("Invalid param(s) in handlePuntedIPPacket.. DestIP: {}. hostTracker: {}", dIP, hostTracker);
-            return;
+        InetAddress sIP = NetUtils.getInetAddress(pkt.getSourceAddress());
+        if (dIP == null || sIP == null || hostTracker == null) {
+            log.debug("Invalid param(s) in handlePuntedIPPacket.. SourceIP: {}, DestIP: {}. hostTracker: {}", sIP, dIP, hostTracker);
+            return PacketResult.IGNORED;
+        }
+
+        HostNodeConnector destHost = this.hostTracker.hostFind(dIP);
+        HostNodeConnector sourceHost = this.hostTracker.hostFind(sIP);
+
+
+        if(sourceHost == null || destHost == null) {
+            log.warn("Punted ICMP packet: problem with source: {} {} or destination: {} {}", sourceHost, sIP, destHost, dIP);
+            return PacketResult.IGNORED;
+        } else {
+            log.warn("Punted ICMP packet has source: {} {} and destination: {} {}", sourceHost, sIP, destHost, dIP);
+        }
+
+        List<FlowEntry> createdFlowEntrys = createFlowsForSelectedPath(sourceHost, (short) -1, destHost, (short) -1, IPProtocols.ICMP.byteValue(), bAddReverse);
+
+        if(createdFlowEntrys.size() == 0) return PacketResult.IGNORED;
+        return PacketResult.IGNORED;
+    }
+
+
+    private PacketResult handlePuntedTcpPacket(IPv4 pkt, TCP tcpPacket, NodeConnector incomingNodeConnector, boolean bAddReverse) {
+        InetAddress dIP = NetUtils.getInetAddress(pkt.getDestinationAddress());
+        InetAddress sIP = NetUtils.getInetAddress(pkt.getSourceAddress());
+        if (sIP == null || dIP == null || hostTracker == null) {
+            log.debug("Invalid param(s) in handlePuntedIPPacket.. SourceIP: {}, DestIP: {}. hostTracker: {}", sIP, dIP, hostTracker);
+            return PacketResult.IGNORED;
         }
         HostNodeConnector destHost = this.hostTracker.hostFind(dIP);
+        HostNodeConnector sourceHost = this.hostTracker.hostFind(sIP);
 
-        Set<HostNodeConnector> allHosts = this.hostTracker.getAllHosts();
-
-        HostNodeConnector sourceHost = null;
-        for(HostNodeConnector hnc: allHosts) {
-            if(hnc.getnodeConnector().equals(incomingNodeConnector)) {
-                sourceHost = hnc;
-                break;
-            }
+        if(sourceHost == null || destHost == null) {
+            log.warn("Punted TCP packet: problem with source: {} {} or destination: {} {}", sourceHost, sIP, destHost, dIP);
+            return PacketResult.IGNORED;
+        } else {
+            log.warn("Punted TCP packet has source: {} {} and destination: {} {}", sourceHost, sIP, destHost, dIP);
         }
-
-        if(sourceHost == null) {
-            log.warn("Cannot find the host node connector for incoming {}", incomingNodeConnector);
-            log.warn("Dropping punted IP packet received at {} to Host {}", incomingNodeConnector, dIP);
-            return;
-        }
-
-        List<FlowEntry> createdFlowEntrys = null;
 
         // This is a TCP/IP packet - extract the TCP source and destination ports
 
@@ -484,17 +577,14 @@ public class MultiPath implements IPathFinderService, IfNewHostNotify,
 
         short destinationPort = tcpPacket.getDestinationPort();
 
-        //destinationPort = (short) -1;
+        destinationPort = (short) -1;
 
         log.info("Punted TCP/IP Packet from Source {} port {}, to Destination {} port {}", sourceHost, sourcePort, destHost, destinationPort);
 
-        createdFlowEntrys = createFlowsForSelectedPath(sourceHost, sourcePort, destHost, destinationPort, IPProtocols.TCP.byteValue(), false);
+        List<FlowEntry> createdFlowEntrys = createFlowsForSelectedPath(sourceHost, sourcePort, destHost, destinationPort, IPProtocols.TCP.byteValue(), bAddReverse);
 
-        log.info("FlowEntrys created:");
-        for(FlowEntry fe: createdFlowEntrys) {
-            log.info(fe.toString());
-        }
-
+        if(createdFlowEntrys.size() == 0) return PacketResult.IGNORED;
+        return PacketResult.IGNORED;
     }
 
 

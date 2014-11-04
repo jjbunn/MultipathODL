@@ -21,7 +21,7 @@ public class CalculateDataRates implements Runnable {
     /** Last timestamp of Executor run */
     protected long lastDataRateTimestamp = System.currentTimeMillis();
     /** The interval for the Executor, in TimeUnit.SECONDS */
-    protected final int DATARATE_CALCULATOR_INTERVAL = 10;
+    protected final int DATARATE_CALCULATOR_INTERVAL = 120;
     /** The map that maintains up to date link data rate */
     protected ConcurrentHashMap<Edge, Double> linkDataRate = new ConcurrentHashMap<Edge, Double>();
     /** The map that maintains up to date link Bytes transferred data */
