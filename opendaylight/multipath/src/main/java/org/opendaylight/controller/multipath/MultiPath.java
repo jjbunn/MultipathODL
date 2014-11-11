@@ -42,6 +42,7 @@ import org.opendaylight.controller.sal.core.UpdateType;
 import org.opendaylight.controller.sal.flowprogrammer.Flow;
 import org.opendaylight.controller.sal.match.Match;
 import org.opendaylight.controller.sal.match.MatchType;
+import org.opendaylight.controller.sal.packet.ARP;
 import org.opendaylight.controller.sal.packet.ICMP;
 import org.opendaylight.controller.sal.packet.IListenDataPacket;
 import org.opendaylight.controller.sal.packet.PacketResult;
@@ -512,10 +513,13 @@ public class MultiPath implements IPathFinderService, IfNewHostNotify,
                 } else if(prot == IPProtocols.ICMP.byteValue()) {
                     ICMP icmpPacket = (ICMP) ((IPv4) nextPak).getPayload();
                     log.info("Need flows for ICMP packet {}", icmpPacket.toString());
-                    short sequenceNumber = icmpPacket.getSequenceNumber();
-                    if(sequenceNumber > 1) return PacketResult.IGNORED;
-                    return handlePuntedIcmpPacket((IPv4) nextPak, icmpPacket, inPkt.getIncomingNodeConnector(), true);
+                    //short sequenceNumber = icmpPacket.getSequenceNumber();
+                    //if(sequenceNumber > 1) return PacketResult.IGNORED;
+                    return handlePuntedIcmpPacket((IPv4) nextPak, icmpPacket, inPkt.getIncomingNodeConnector(), false);
                 }
+            } else if(nextPak instanceof ARP){
+                ARP arpPacket = (ARP) nextPak;
+                log.info("Received ARP packet: {}", arpPacket);
             } else {
                 //log.info("Ethernet punted packet class {}", Ethernet.etherTypeClassMap.get(etherPacket.getEtherType()));
             }
