@@ -42,6 +42,7 @@ import org.opendaylight.controller.sal.core.UpdateType;
 import org.opendaylight.controller.sal.flowprogrammer.Flow;
 import org.opendaylight.controller.sal.match.Match;
 import org.opendaylight.controller.sal.match.MatchType;
+import org.opendaylight.controller.sal.packet.ARP;
 import org.opendaylight.controller.sal.packet.ICMP;
 import org.opendaylight.controller.sal.packet.IListenDataPacket;
 import org.opendaylight.controller.sal.packet.PacketResult;
@@ -113,7 +114,7 @@ public class MultiPath implements IPathFinderService, IfNewHostNotify,
     /** The maximum link weight. */
     public static final int MAX_LINK_WEIGHT = 10000;
     /** The flow idle timeout */
-    public static final short FLOW_IDLE_TIMEOUT = 10;
+    public static final short FLOW_IDLE_TIMEOUT = 60;
     /** The maximum path weight. */
     public static final int MAX_PATH_WEIGHT = Integer.MAX_VALUE
             - MAX_LINK_WEIGHT - 1;
@@ -229,8 +230,12 @@ public class MultiPath implements IPathFinderService, IfNewHostNotify,
                 destinationNode);
 
         String flowName = source.getNetworkAddressAsString() + " to "
-                + destination.getNetworkAddressAsString();
+                + destination.getNetworkAddressAsString() + " protocol "+protocol+
+                " sP "+sourceTcpPort+
+                " dP "+destinationTcpPort;
         String policyName = currentPathSelector.getName()+" "+flowName;
+
+
 
         log.warn("Flow creation for " + flowName + " Switches "
                 + sourceNode.toString() + " to " + destinationNode.toString());
@@ -259,7 +264,6 @@ public class MultiPath implements IPathFinderService, IfNewHostNotify,
             }
 
             actions.add(new Output(destinationNodeConnector));
-            //actions.add(new PopVlan());
 
             match.setField(MatchType.IN_PORT, sourceNodeConnector);
 
@@ -268,7 +272,7 @@ public class MultiPath implements IPathFinderService, IfNewHostNotify,
             flow.setHardTimeout((short) 0);
             flow.setPriority(DEFAULT_IPSWITCH_PRIORITY);
 
-            log.warn("Adding flow in the switch: " + flow.toString());
+            log.warn("Adding flow to list for switch: " + flow.toString());
 
             FlowEntry fe = new FlowEntry(policyName, flowName, flow, sourceNode);
 
@@ -449,15 +453,13 @@ public class MultiPath implements IPathFinderService, IfNewHostNotify,
             }
         }
 
-        // Get existing Flow Entrys for this group, and remove them
+        // Get existing Flow Entrys for this group: don't reinstall existing flows
 
         List<FlowEntry> existing = forwardingRulesManager.getFlowEntriesForGroup(policyName);
 
-        if(existing.size() > 0) {
-            log.warn("Uninstalling existing "+existing.size()+" Flow Entrys for "+policyName);
-            for(FlowEntry fe: existing) {
-                forwardingRulesManager.uninstallFlowEntry(fe);
-            }
+        if(existing.size() == flows.size()) {
+            log.warn("Skipping, as there are already the required "+existing.size()+" FlowEntrys for "+policyName);
+            return existing;
         }
 
         // Now add the flows using the rules manager
@@ -467,7 +469,7 @@ public class MultiPath implements IPathFinderService, IfNewHostNotify,
         for(FlowEntry fe: flows) {
             log.info("Attempt install of FlowEntry {}", fe.toString());
             // Remove any matching FlowEntry
-            forwardingRulesManager.uninstallFlowEntry(fe);
+            // forwardingRulesManager.uninstallFlowEntry(fe);
             if(!forwardingRulesManager.installFlowEntry(fe).isSuccess()) {
                 log.warn("Error installing the FlowEntry");
             } else {
@@ -480,7 +482,7 @@ public class MultiPath implements IPathFinderService, IfNewHostNotify,
 
         // If any flow installations failed, remove those that succeeded
 
-        if(installedFlowEntrys.size() != flows.size()) {
+        if(installedFlowEntrys.size() != flows.size() && installedFlowEntrys.size() > 0) {
             log.warn("Some flow installations failed: removing the {} successful flows, as incomplete", installedFlowEntrys.size());
             for(FlowEntry fe: installedFlowEntrys) {
                 forwardingRulesManager.uninstallFlowEntry(fe);
@@ -512,10 +514,13 @@ public class MultiPath implements IPathFinderService, IfNewHostNotify,
                 } else if(prot == IPProtocols.ICMP.byteValue()) {
                     ICMP icmpPacket = (ICMP) ((IPv4) nextPak).getPayload();
                     log.info("Need flows for ICMP packet {}", icmpPacket.toString());
-                    short sequenceNumber = icmpPacket.getSequenceNumber();
-                    if(sequenceNumber > 1) return PacketResult.IGNORED;
-                    return handlePuntedIcmpPacket((IPv4) nextPak, icmpPacket, inPkt.getIncomingNodeConnector(), true);
+                    //short sequenceNumber = icmpPacket.getSequenceNumber();
+                    //if(sequenceNumber > 1) return PacketResult.IGNORED;
+                    return handlePuntedIcmpPacket((IPv4) nextPak, icmpPacket, inPkt.getIncomingNodeConnector(), false);
                 }
+            } else if(nextPak instanceof ARP){
+                ARP arpPacket = (ARP) nextPak;
+                //log.info("Received ARP packet: {}", arpPacket);
             } else {
                 //log.info("Ethernet punted packet class {}", Ethernet.etherTypeClassMap.get(etherPacket.getEtherType()));
             }
@@ -573,7 +578,7 @@ public class MultiPath implements IPathFinderService, IfNewHostNotify,
 
         short sourcePort = tcpPacket.getSourcePort();
 
-        sourcePort = (short) -1;
+        //sourcePort = (short) -1;
 
         short destinationPort = tcpPacket.getDestinationPort();
 
@@ -657,7 +662,7 @@ public class MultiPath implements IPathFinderService, IfNewHostNotify,
         pathSelectors.add(new RandomPathSelector(this));
         pathSelectors.add(new HashIpPathSelector(this));
         pathSelectors.add(new HashPortPathSelector(this));
-        pathSelectors.add(new RoundRobinPathSelector(this, this));
+        pathSelectors.add(new RoundRobinPathSelector(this));
         pathSelectors.add(new FlowUtilizationPathSelector(this));
         pathSelectors.add(new CapacityPathSelector(this));
         pathSelectors.add(new FlowUtilizationAndCapacityPathSelector(this));
@@ -1220,8 +1225,7 @@ public class MultiPath implements IPathFinderService, IfNewHostNotify,
          * destination nodes.
          */
         private IPathFinderService pathFinder;
-        /** All paths established in the topology. */
-        private IPathCacheService pathCache;
+
         /**
          * Counter for round robin path selection in a map:
          * [EndPoints->Counter].
@@ -1233,12 +1237,8 @@ public class MultiPath implements IPathFinderService, IfNewHostNotify,
          *
          * @param pathFinder
          *            path finder service.
-         * @param pathCache
-         *            path cache service.
          */
-        public RoundRobinPathSelector(IPathFinderService pathFinder,
-                IPathCacheService pathCache) {
-            this.pathCache = pathCache;
+        public RoundRobinPathSelector(IPathFinderService pathFinder) {
             this.pathFinder = pathFinder;
             this.pathCounter = new ConcurrentHashMap<EndPoints, Integer>();
         }
@@ -1265,12 +1265,7 @@ public class MultiPath implements IPathFinderService, IfNewHostNotify,
             /* A source-destination pair of a path. */
             EndPoints endPoints = null;
             /* Get pre-calculated paths. */
-            Set<ExtendedPath> paths = this.pathFinder
-                    .getPaths(srcNode, dstNode);
-
-            if (pathCache == null) {
-                return null;
-            }
+            Set<ExtendedPath> paths = this.pathFinder.getPaths(srcNode, dstNode);
 
             if (paths != null && !paths.isEmpty()) {
                 pathArray = (ExtendedPath[]) paths
@@ -1285,9 +1280,10 @@ public class MultiPath implements IPathFinderService, IfNewHostNotify,
             if (!pathCounter.containsKey(endPoints)) {
                 pathCounter.put(endPoints, 0);
             }
-            int counter = pathCounter.get(endPoints)
-                    % pathCache.getAllPaths(srcNode, dstNode).size();
+            int counter = pathCounter.get(endPoints) % paths.size();
             pathCounter.put(endPoints, (counter + 1));
+
+            log.info("Round Robin Path Selector: there are {} possible paths, and number {} will be selected.", paths.size(), counter);
 
             // select one of the paths in round robin manner.
             if (pathArray.length > 0) {
@@ -1651,7 +1647,7 @@ public class MultiPath implements IPathFinderService, IfNewHostNotify,
                 for (Edge link : links) {
                     // Note that these are in Bits
                     long linkBitRate = 0;
-                    long linkCapacity = 0;
+                    long linkCapacity = 100000000000L;
 
                     if (edgeTopology.containsKey(link)) {
                         for (Property property : edgeTopology.get(link)) {
@@ -1659,6 +1655,7 @@ public class MultiPath implements IPathFinderService, IfNewHostNotify,
                                     Bandwidth.BandwidthPropName)) {
                                 linkCapacity = ((Bandwidth) property)
                                         .getValue();
+                                log.info("Link {} capacity {}", link, linkCapacity);
                                 break;
                             }
                         }
@@ -1681,6 +1678,7 @@ public class MultiPath implements IPathFinderService, IfNewHostNotify,
                     }
 
                 }
+                log.info("Path {} available bandwidth {}", path, pathAvailableBandwidth);
 
                 if (pathAvailableBandwidth > bestAvailableBandwidth) {
                     bestAvailableBandwidth = pathAvailableBandwidth;

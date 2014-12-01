@@ -5,8 +5,9 @@
     <groupId>org.opendaylight.controller</groupId>
     <artifactId>commons.opendaylight</artifactId>
     <version>1.4.2-SNAPSHOT</version>
-    <relativePath>../../commons/opendaylight</relativePath>
+    <relativePath>../commons/opendaylight</relativePath>
   </parent>
+  <properties><testvm.argLine>-Xmx2048m -XX:MaxPermSize=512m</testvm.argLine></properties>
 
   <artifactId>multipath</artifactId>
   <version>0.4.2-SNAPSHOT</version>
@@ -84,6 +85,37 @@
       </plugin>
 
     </plugins>
+    <pluginManagement>
+       <plugins>
+          <!--This plugin's configuration is used to store Eclipse m2e settings only. It has no influence on the Maven build itself.-->
+          <plugin>
+             <groupId>org.eclipse.m2e</groupId>
+             <artifactId>lifecycle-mapping</artifactId>
+             <version>1.0.0</version>
+             <configuration>
+                <lifecycleMappingMetadata>
+                    <pluginExecutions>
+                            <pluginExecution>
+                                <pluginExecutionFilter>
+                                    <groupId>org.codehaus.mojo</groupId>
+                                    <artifactId>
+                                        build-helper-maven-plugin
+                                    </artifactId>
+                                    <versionRange>[1.8,)</versionRange>
+                                    <goals>
+                                        <goal>add-source</goal>
+                                    </goals>
+                                </pluginExecutionFilter>
+                                <action>
+                                    <ignore></ignore>
+                                </action>
+                            </pluginExecution>
+                        </pluginExecutions>
+                    </lifecycleMappingMetadata>
+                </configuration>
+            </plugin>
+        </plugins>
+    </pluginManagement>
   </build>
   <scm>
     <connection>scm:git:ssh://git.opendaylight.org:29418/controller.git</connection>
