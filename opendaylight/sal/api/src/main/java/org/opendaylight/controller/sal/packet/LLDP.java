@@ -28,8 +28,10 @@ public class LLDP extends Packet {
     private static final int LLDPDefaultTlvs = 4;
     private static LLDPTLV emptyTLV = new LLDPTLV().setLength((short) 0)
             .setType((byte) 0);
+//  public static final byte[] LLDPMulticastMac = { 1, (byte) 0x80,
+//  (byte) 0xc2, 0, 0, (byte) 0xe };
     public static final byte[] LLDPMulticastMac = { 1, (byte) 0x80,
-            (byte) 0xc2, 0, 0, (byte) 0xe };
+    (byte) 0xc2, (byte) 0xaa, (byte) 0xbb, (byte) 0xe };
     private Map<Byte, LLDPTLV> tlvList;
 
     /**

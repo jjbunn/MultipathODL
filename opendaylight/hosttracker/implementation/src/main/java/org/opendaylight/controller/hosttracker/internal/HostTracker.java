@@ -449,8 +449,8 @@ public class HostTracker implements IfIptoHost, IfHostListener, IHostTrackerShel
             // Another host is already learned for this IP address, replace it
             replaceHost(id, rHost, host);
         } else {
-            logger.debug("New Host Learned: MAC: {}  IP: {}", HexEncode.bytesToHexString(host
-                    .getDataLayerAddressBytes()), host.getNetworkAddress().getHostAddress());
+            logger.debug("New Host Learned: MAC: {}  IP: {} Switch: {}", HexEncode.bytesToHexString(host
+                    .getDataLayerAddressBytes()), host.getNetworkAddress().getHostAddress(), host.getnodeconnectorNode());
         }
     }
 

@@ -810,7 +810,7 @@ public class MultipathNorthbound {
           Node connNode = hnconn.getnodeconnectorNode();
           JsonObject jsonHost = new JsonObject();
           jsonHost.addProperty("IP Address", netAddress);
-          jsonHost.addProperty("Node Connected", myNodeString(connNode));
+          //jsonHost.addProperty("Node Connected", myNodeString(connNode));
           jsonHost.addProperty("Node Connector", hnconn.getnodeConnector().toString());
           hostList.add(jsonHost);
       }

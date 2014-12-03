@@ -7,7 +7,7 @@
     <version>1.4.2-SNAPSHOT</version>
     <relativePath>../opendaylight</relativePath>
   </parent>
-
+  <properties><testvm.argLine>-Xmx2048m -XX:MaxPermSize=1024m</testvm.argLine></properties>
   <artifactId>liblldp</artifactId>
   <version>0.8.1-SNAPSHOT</version>
   <packaging>bundle</packaging>
