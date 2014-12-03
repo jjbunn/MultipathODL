@@ -520,7 +520,11 @@ public class MultiPath implements IPathFinderService, IfNewHostNotify,
                 }
             } else if(nextPak instanceof ARP){
                 ARP arpPacket = (ARP) nextPak;
+<<<<<<< HEAD
                 //log.info("Received ARP packet: {}", arpPacket);
+=======
+                log.info("Received ARP packet: {}", arpPacket);
+>>>>>>> 361b8f46ea543c9f85a3c5cd3113904ab5119b36
             } else {
                 //log.info("Ethernet punted packet class {}", Ethernet.etherTypeClassMap.get(etherPacket.getEtherType()));
             }
