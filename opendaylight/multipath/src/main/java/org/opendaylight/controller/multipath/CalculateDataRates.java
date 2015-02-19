@@ -23,9 +23,14 @@ public class CalculateDataRates implements Runnable {
     /** The interval for the Executor, in TimeUnit.SECONDS */
     protected final int DATARATE_CALCULATOR_INTERVAL = 120;
     /** The map that maintains up to date link data rate */
-    protected ConcurrentHashMap<Edge, Double> linkDataRate = new ConcurrentHashMap<Edge, Double>();
+    protected ConcurrentHashMap<Edge, Double> linkDataRate = null;
     /** The map that maintains up to date link Bytes transferred data */
-    protected ConcurrentHashMap<Edge, Long> linkBytesTransferred = new ConcurrentHashMap<Edge, Long>();
+    protected ConcurrentHashMap<Edge, Long> linkBytesTransferred = null;
+
+    public void init() {
+        linkDataRate = new ConcurrentHashMap<Edge, Double>();
+        linkBytesTransferred = new ConcurrentHashMap<Edge, Long>();
+    }
 
     public void run() {
 
@@ -45,10 +50,11 @@ public class CalculateDataRates implements Runnable {
                 log.error("CalculateDataRates: topology or statistics Manager is null!");
                 return;
             }
-
+            if(linkDataRate == null || linkBytesTransferred == null) {
+                log.error("CalculateDataRates: linkDataRate or linkBytesTransferred maps are null");
+                return;
+            }
             Map<Edge, Set<Property>> edgeTopology = topologyManager.getEdges();
-
-
 
             // Elapsed time in seconds
             double elapsedTime = 0.001 * (double) (thisDataRateTimestamp - lastDataRateTimestamp);
