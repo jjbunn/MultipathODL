@@ -7,7 +7,7 @@
     <version>1.4.2-SNAPSHOT</version>
     <relativePath>../commons/opendaylight</relativePath>
   </parent>
-  <properties><testvm.argLine>-Xmx2048m -XX:MaxPermSize=512m</testvm.argLine></properties>
+  <properties><testvm.argLine>-Xmx512m -XX:MaxPermSize=512m</testvm.argLine></properties>
 
   <artifactId>multipath</artifactId>
   <version>0.4.2-SNAPSHOT</version>

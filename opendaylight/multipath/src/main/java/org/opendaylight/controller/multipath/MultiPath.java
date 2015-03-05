@@ -56,6 +56,7 @@ import org.opendaylight.controller.sal.reader.FlowOnNode;
 import org.opendaylight.controller.sal.routing.IListenRoutingUpdates;
 import org.opendaylight.controller.sal.routing.IRouting;
 import org.opendaylight.controller.sal.utils.EtherTypes;
+import org.opendaylight.controller.sal.utils.HexEncode;
 import org.opendaylight.controller.sal.utils.IPProtocols;
 import org.opendaylight.controller.sal.utils.ServiceHelper;
 import org.opendaylight.controller.sal.utils.Status;
@@ -498,7 +499,6 @@ public class MultiPath implements IPathFinderService, IfNewHostNotify,
         if (inPkt == null) {
             return PacketResult.IGNORED;
         }
-        //log.warn("Received a frame of size: {}", inPkt.getPacketData().length);
         Packet formattedPak = this.dataPacketService.decodeDataPacket(inPkt);
 
         if (formattedPak instanceof Ethernet) {
@@ -520,8 +520,20 @@ public class MultiPath implements IPathFinderService, IfNewHostNotify,
                 }
             } else if(nextPak instanceof ARP){
                 ARP arpPacket = (ARP) nextPak;
+                String sourceMAC = HexEncode.bytesToHexString(arpPacket.getSenderHardwareAddress());
+                String targetMAC = HexEncode.bytesToHexString(arpPacket.getTargetHardwareAddress());
+                try {
+                    InetAddress targetIP = InetAddress.getByAddress(arpPacket.getTargetProtocolAddress());
+                    InetAddress sourceIP = InetAddress.getByAddress(arpPacket.getSenderProtocolAddress());
 
-                //log.info("Received ARP packet: {}", arpPacket);
+                    NodeConnector nc = inPkt.getIncomingNodeConnector();
+
+                    log.info("Received ARP packet from {}  source MAC/IP {} {} target MAC/IP {}{}", nc, sourceMAC, sourceIP,
+                        targetMAC, targetIP);
+
+                } catch (Exception e) {
+                    log.info("Received ARP packet: {} with undecoded IP addresses", arpPacket);
+                }
 
             } else {
                 //log.info("Ethernet punted packet class {}", Ethernet.etherTypeClassMap.get(etherPacket.getEtherType()));
@@ -739,7 +751,7 @@ public class MultiPath implements IPathFinderService, IfNewHostNotify,
         for(HostNodeConnector hnc: allHosts) {
             allHostIPs += hnc.getNetworkAddressAsString() + " ";
         }
-        log.info("recalculateDone: there are {} hosts: {}", allHosts.size(), allHostIPs);
+        log.debug("recalculateDone: there are {} hosts: {}", allHosts.size(), allHostIPs);
 
     }
 
@@ -768,6 +780,32 @@ public class MultiPath implements IPathFinderService, IfNewHostNotify,
 
     }
 
+    /**
+     * A Host facing port went down in a container.
+     *
+     * @param node
+     *            Node of the port where port came up
+     * @param swPort
+     *            NodeConnector which went down
+     */
+    private void updateRulesforHIFdown(Node node, NodeConnector swPort) {
+        if (this.hostTracker == null) {
+            // Not yet ready to process all the updates
+            return;
+        }
+        log.info("Host Facing Port {} in Node {} went down!",
+                swPort.getNodeConnectorIdAsString(), node.getNodeIDString());
+        Set<HostNodeConnector> allHosts = this.hostTracker.getAllHosts();
+        String allHostIPs = "";
+        for(HostNodeConnector hnc: allHosts) {
+            allHostIPs += hnc.getNetworkAddressAsString() + " ";
+        }
+        log.info("There are {} hosts: {}", allHosts.size(), allHostIPs);
+
+    }
+
+
+
     @Override
     public void notifyHTClient(HostNodeConnector host) {
         if (host == null) {
@@ -792,14 +830,14 @@ public class MultiPath implements IPathFinderService, IfNewHostNotify,
         // log.info("Node ID {}", node.getNodeIDString());
         switch (type) {
         case REMOVED:
-            log.info("Node {} gone", node);
+            log.debug("Node {} gone", node);
             break;
         case ADDED:
-            log.info("Node {} added", node);
+            log.debug("Node {} added", node);
             break;
 
         case CHANGED:
-            log.info("Node {} changed", node);
+            log.debug("Node {} changed", node);
             break;
         default:
             break;
@@ -817,11 +855,11 @@ public class MultiPath implements IPathFinderService, IfNewHostNotify,
         boolean up = false;
         switch (type) {
         case ADDED:
-            log.info("NodeConnector {} added", nodeConnector);
+            log.debug("NodeConnector {} added", nodeConnector);
             up = true;
             break;
         case REMOVED:
-            log.info("NodeConnector {} removed", nodeConnector);
+            log.debug("NodeConnector {} removed", nodeConnector);
             break;
         case CHANGED:
             State state = (State) propMap.get(State.StatePropName);
@@ -846,21 +884,29 @@ public class MultiPath implements IPathFinderService, IfNewHostNotify,
 
     private void handleNodeConnectorStatusUp(NodeConnector nodeConnector) {
         if (topologyManager == null) {
-            log.info("topologyManager is not set yet");
+            log.warn("topologyManager is not set yet");
             return;
         }
 
         if (topologyManager.isInternal(nodeConnector)) {
-            log.info("{} is not a host facing link", nodeConnector);
+            log.debug("{} is not a host facing link", nodeConnector);
             return;
         }
 
-        log.info("{} is up", nodeConnector);
+        log.debug("{} is up", nodeConnector);
         updateRulesforHIFup(nodeConnector.getNode(), nodeConnector);
     }
 
     private void handleNodeConnectorStatusDown(NodeConnector nodeConnector) {
+        if (topologyManager == null) {
+            log.warn("topologyManager is not set yet");
+            return;
+        }
         log.info("{} is down", nodeConnector);
+        if (!topologyManager.isInternal(nodeConnector)) {
+            // a host facing link
+            updateRulesforHIFdown(nodeConnector.getNode(), nodeConnector);
+        }
     }
 
     /**
@@ -2697,18 +2743,6 @@ public class MultiPath implements IPathFinderService, IfNewHostNotify,
     }
 
     @Override
-    public boolean hasPath(Node srcNode, Node dstNode) {
-        if (!containsPath(srcNode, dstNode)) {
-            this.calculatePaths(srcNode, dstNode);
-        }
-        if (!containsPath(srcNode, dstNode)) {
-            return false;
-        } else {
-            return true;
-        }
-    }
-
-    @Override
     public ExtendedPath getPath(Node srcNode, Node dstNode, Match match) {
         // If the source switch equals a destination switch.
         if (srcNode == dstNode) {
@@ -2720,10 +2754,9 @@ public class MultiPath implements IPathFinderService, IfNewHostNotify,
                 return null;
             }
         }
-        // Make sure we calculated a path.
-        if (!containsPath(srcNode, dstNode)) {
-            this.calculatePaths(srcNode, dstNode);
-        }
+        // We always calculate the possible paths
+        this.calculatePaths(srcNode, dstNode);
+
         return this.currentPathSelector.selectPath(srcNode, dstNode, match);
     }
 
@@ -2744,9 +2777,8 @@ public class MultiPath implements IPathFinderService, IfNewHostNotify,
         if (srcNode == dstNode)
             return null;
 
-        if (!containsPath(srcNode, dstNode)) {
-            this.calculatePaths(srcNode, dstNode);
-        }
+        // We always calculate the possible paths
+        this.calculatePaths(srcNode, dstNode);
 
         return getAllPaths(srcNode, dstNode);
     }

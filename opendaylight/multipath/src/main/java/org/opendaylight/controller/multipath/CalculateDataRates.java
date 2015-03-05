@@ -5,6 +5,8 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
+import org.opendaylight.controller.hosttracker.IfIptoHost;
+import org.opendaylight.controller.hosttracker.hostAware.HostNodeConnector;
 import org.opendaylight.controller.sal.core.Edge;
 import org.opendaylight.controller.sal.core.NodeConnector;
 import org.opendaylight.controller.sal.core.Property;
@@ -21,7 +23,7 @@ public class CalculateDataRates implements Runnable {
     /** Last timestamp of Executor run */
     protected long lastDataRateTimestamp = System.currentTimeMillis();
     /** The interval for the Executor, in TimeUnit.SECONDS */
-    protected final int DATARATE_CALCULATOR_INTERVAL = 120;
+    protected final int DATARATE_CALCULATOR_INTERVAL = 60;
     /** The map that maintains up to date link data rate */
     protected ConcurrentHashMap<Edge, Double> linkDataRate = null;
     /** The map that maintains up to date link Bytes transferred data */
@@ -84,6 +86,19 @@ public class CalculateDataRates implements Runnable {
                 linkDataRate.put(edge, dataRate);
             }
             //log.info("CalculateDataRates finished calculating {} edges",currentEdges.size());
+
+            IfIptoHost hostTracker = (IfIptoHost) ServiceHelper
+                    .getGlobalInstance(IfIptoHost.class, this);
+
+            if (hostTracker != null) {
+                Set<HostNodeConnector> allHosts = hostTracker.getAllHosts();
+
+                String allHostIPSwitches = "";
+                for(HostNodeConnector hnc: allHosts) {
+                    allHostIPSwitches += hnc.getNetworkAddressAsString() + " at " + hnc.getnodeconnectorNode() + ", ";
+                }
+                log.info("hostTracker reports there are {} hosts: {}", allHosts.size(), allHostIPSwitches);
+            }
 
         } catch (Exception e) {
             log.warn("CalculateDataRates exception {}", e);

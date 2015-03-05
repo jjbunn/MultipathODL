@@ -256,6 +256,10 @@ public class MultipathNorthbound {
 
        Set<Node> allNodes = nodeMapTopology.keySet();
 
+       if(allNodes.size() == 0) {
+           throw new BadRequestException("There are no nodes in the topology!");
+       }
+
        // Get all hosts
        IfIptoHost hostTracker = (IfIptoHost) ServiceHelper
                .getGlobalInstance(IfIptoHost.class, this);
@@ -379,6 +383,11 @@ public class MultipathNorthbound {
 
       Set<Node> allNodes = nodeMapTopology.keySet();
 
+      if(allNodes.size() == 0) {
+          throw new BadRequestException("There are no nodes in the topology!");
+      }
+
+
       // Get all hosts
       IfIptoHost hostTracker = (IfIptoHost) ServiceHelper
               .getGlobalInstance(IfIptoHost.class, this);
@@ -395,7 +404,7 @@ public class MultipathNorthbound {
           // Not a node ... perhaps a host?
           n1 = myStringHost(node1, allHosts);
           if(n1 == null) {
-              throw new BadRequestException("Node "+node1+" does not exist in the topology");
+              throw new BadRequestException("Node or Host "+node1+" does not exist in the topology");
           }
       }
 
@@ -405,7 +414,7 @@ public class MultipathNorthbound {
           // Not a node ... perhaps a host?
           n2 = myStringHost(node2, allHosts);
           if(n2 == null) {
-              throw new BadRequestException("Node "+node1+" does not exist in the topology");
+              throw new BadRequestException("Node or Host "+node1+" does not exist in the topology");
           }
       }
 
@@ -948,6 +957,11 @@ public class MultipathNorthbound {
 
      Set<Node> allNodes = nodeMapTopology.keySet();
 
+     if(allNodes.size() == 0) {
+         throw new BadRequestException("There are no nodes in the topology!");
+     }
+
+
      Node node = myStringNode(nodeName, allNodes);
 
      if(node == null) {
@@ -1033,6 +1047,11 @@ public Response removeFlows(
             .getNodeEdges();
 
     Set<Node> allNodes = nodeMapTopology.keySet();
+
+    if(allNodes.size() == 0) {
+        throw new BadRequestException("There are no nodes in the topology!");
+    }
+
 
     Node node = myStringNode(nodeName, allNodes);
 

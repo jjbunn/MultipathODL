@@ -55,14 +55,6 @@ public interface IPathFinderService {
      * @param dstNode
      * @return
      */
-    public boolean hasPath(Node srcNode, Node dstNode);
-
-    /**
-     *
-     * @param srcNode
-     * @param dstNode
-     * @return
-     */
     public ExtendedPath getPath(Node srcNode, Node dstNode, Match match);
 
     /**
